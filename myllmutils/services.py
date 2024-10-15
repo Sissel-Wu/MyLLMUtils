@@ -4,14 +4,18 @@ from openai.types.chat import ChatCompletion
 import tiktoken
 from abc import ABC, abstractmethod
 from os import environ
+import os
+from datetime import datetime
+import json
 
 
 class Messages(ABC):
     """
     Abstract class for messages to be sent to OpenAI's (or compatible) chat API.
     """
+
     @abstractmethod
-    def to_openai_form(self):
+    def to_openai_form(self) -> list[dict[str, str]]:
         """
         Convert the messages to the form that OpenAI's chat API expects.
         :return: A list of {"role": "system" | "assistant" | "user", "content": "xxx"}
@@ -24,11 +28,12 @@ class ZeroShotMessages(Messages):
     Messages for zero-shot chat completion, in the form of
     [{"role": "system", "content": system_message}, {"role": "user", "content": user_query}]
     """
+
     def __init__(self, user_query: str, system_message=None):
         self.system_message = system_message
         self.user_query = user_query
 
-    def to_openai_form(self):
+    def to_openai_form(self) -> list[dict[str, str]]:
         rst = []
         if self.system_message is not None:
             rst.append({"role": "system", "content": self.system_message})
@@ -40,7 +45,9 @@ class ZeroShotMessages(Messages):
 
 
 class LLMService:
-    def __init__(self, base_url: str | None = None, api_key: str | None = None):
+    def __init__(self,
+                 base_url: str | None = None,
+                 api_key: str | None = None):
         """
         Initialize the LLM service.
         :param base_url: If None, the env variable "MYLLM_URL" is used.
@@ -59,8 +66,18 @@ class LLMService:
             api_key = environ.get("OPENAI_API_KEY")
         self._client = OpenAI(api_key=api_key,
                               base_url=base_url)
+        self.output_dir = None
 
-    def embed(self, document: str, method: str) -> openai.types.CreateEmbeddingResponse:
+    def set_output_dir(self, output_dir: str):
+        """
+        Set the output directory for the LLM service.
+        :param output_dir: The output directory.
+        """
+        self.output_dir = output_dir
+
+    def embed(self,
+              document: str,
+              method: str) -> openai.types.CreateEmbeddingResponse:
         """
         Embed a document using the specified method/model.
         The results are cached and if the document is already embedded, the cached result will be returned.
@@ -80,29 +97,80 @@ class LLMService:
     def chat_complete(self,
                       messages: Messages,
                       model: str,
-                      temperature: float | None | openai.NotGiven) -> ChatCompletion:
+                      temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                      return_str: bool = True,
+                      title: str | None = None) -> str | ChatCompletion:
         """
         Query the chat completion API with the given messages.
         :param messages: The messages to send.
         :param model: The model name.
         :param temperature: The temperature.
+        :param return_str: If True (default), return the response as a string. Otherwise, return the raw response.
+        :param title: The title for the files to dump.
+         Note that the files are dumped only if self.output_dir is set.
+         May overwrite the existing files.
         :return: The raw response in OpenAI format.
         """
         response = self._client.chat.completions.create(messages=messages.to_openai_form(),
                                                         model=model,
                                                         temperature=temperature)
-        return response
+        return self._process_response(messages, response, title, return_str)
 
-    def simple_chat(self, message: str, model: str = "gpt-4o-mini", return_str=True) -> str | ChatCompletion:
+    def simple_chat(self,
+                    message: str,
+                    system_message: str | None = None,
+                    model: str = "gpt-4o-mini",
+                    return_str: bool = True) -> str | ChatCompletion:
         """
         A simple chat function, by default returning the single response as a string.
         :param message: The message (string) to send.
+        :param system_message: The system message (string) to send.
         :param model: The model name, e.g., "gpt-4o-mini".
-        :param return_str: If True, return the response as a string. Otherwise, return the raw response.
+        :param return_str: If True (default), return the response as a string. Otherwise, return the raw response.
         :return: A string or the raw response.
         """
-        response = self._client.chat.completions.create(messages=ZeroShotMessages(message).to_openai_form(),
+        messages = ZeroShotMessages(message, system_message)
+        response = self._client.chat.completions.create(messages=messages.to_openai_form(),
                                                         model=model)
+        return self._process_response(messages, response, None, return_str)
+
+    def _process_response(self,
+                          messages: Messages,
+                          response: ChatCompletion,
+                          title: str | None,
+                          return_str: bool) -> str | ChatCompletion:
+        """
+        Process the response from the chat completion API. Process includes:
+        - If self.output_dir is set, save the response to a file.
+        - If return_str is True, return the first choice as a string.
+        :param messages: The messages.
+        :param response: The response.
+        :param title: The title for the files to dump.
+        :return: The processed response.
+        """
+        # TODO: handle more than one response
+
+        if self.output_dir:
+            os.makedirs(f"{self.output_dir}/raw", exist_ok=True)
+            os.makedirs(f"{self.output_dir}/str", exist_ok=True)
+            datetime_now = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+            if title:
+                raw_file = f"{self.output_dir}/raw/{title}.json"
+                str_file = f"{self.output_dir}/str/{title}.txt"
+            else:
+                raw_file = f"{self.output_dir}/raw/chat-{datetime_now}.json"
+                str_file = f"{self.output_dir}/str/chat-{datetime_now}.txt"
+
+            with open(raw_file, "w") as f:
+                parsed_json = json.loads(response.model_dump_json())
+                obj = {"query": messages.to_openai_form(), "response": parsed_json}
+                f.write(json.dumps(obj, indent=2))
+            with open(str_file, "w") as f:
+                query_str = str(messages)
+                combined_str = f"{query_str}\n\n===Response===\n{response.choices[0].message.content}"
+                f.write(combined_str)
+
         if return_str:
             return response.choices[0].message.content
         return response
