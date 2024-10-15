@@ -3,6 +3,7 @@ import openai
 from openai.types.chat import ChatCompletion
 import tiktoken
 from abc import ABC, abstractmethod
+from os import environ
 
 
 class Messages(ABC):
@@ -39,13 +40,23 @@ class ZeroShotMessages(Messages):
 
 
 class LLMService:
-    def __init__(self, base_url: str | None = None, api_key: str = "EMPTY"):
+    def __init__(self, base_url: str | None = None, api_key: str | None = None):
         """
         Initialize the LLM service.
-        :param base_url: By default, the OpenAI API is used.
-        If you want to use compatible LLMs, specify the base URL, e.g., "http://localhost:8000/v1/".
+        :param base_url: If None, the env variable "MYLLM_URL" is used.
+         If the env variable is not set, env variable "OPENAI_BASE_URL" is used.
+         If you want to use compatible LLMs, specify the base URL, e.g., "http://localhost:8000/v1/".
+        :param api_key: If None, the env variable "MYLLM_API_KEY" is used.
+         If the env variable is not set, env variable "OPENAI_API_KEY" is used.
         """
-        self.base_url = base_url
+        if base_url is None:
+            base_url = environ.get("MYLLM_URL")
+        if base_url is None:
+            base_url = environ.get("OPENAI_BASE_URL")
+        if api_key is None:
+            api_key = environ.get("MYLLM_API_KEY")
+        if api_key is None:
+            api_key = environ.get("OPENAI_API_KEY")
         self._client = OpenAI(api_key=api_key,
                               base_url=base_url)
 
@@ -82,7 +93,16 @@ class LLMService:
                                                         temperature=temperature)
         return response
 
-    def simple_chat(self, message: str, model: str) -> ChatCompletion:
+    def simple_chat(self, message: str, model: str = "gpt-4o-mini", return_str=True) -> str | ChatCompletion:
+        """
+        A simple chat function, by default returning the single response as a string.
+        :param message: The message (string) to send.
+        :param model: The model name, e.g., "gpt-4o-mini".
+        :param return_str: If True, return the response as a string. Otherwise, return the raw response.
+        :return: A string or the raw response.
+        """
         response = self._client.chat.completions.create(messages=ZeroShotMessages(message).to_openai_form(),
                                                         model=model)
+        if return_str:
+            return response.choices[0].message.content
         return response
