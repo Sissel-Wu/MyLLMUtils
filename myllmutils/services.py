@@ -29,7 +29,7 @@ class ZeroShotMessages(Messages):
     [{"role": "system", "content": system_message}, {"role": "user", "content": user_query}]
     """
 
-    def __init__(self, user_query: str, system_message=None):
+    def __init__(self, user_query: str, system_message: str | None = None):
         self.system_message = system_message
         self.user_query = user_query
 
@@ -42,6 +42,42 @@ class ZeroShotMessages(Messages):
 
     def __str__(self):
         return f"===System===\n{self.system_message}\n\n===User===\n{self.user_query}"
+
+
+class FewShotMessages(Messages):
+    """
+    Messages for few-shot chat completion, in the form of
+    [{"role": "system", "content": system_message},
+     {"role": "user", "content": query_example_1},
+     {"role": "assistant", "content": assistant_message_1},
+     ...,
+     {"role": "user", "content": user_query}]
+    """
+
+    def __init__(self,
+                 system_message: str,
+                 shots: list[(str, str)],
+                 user_query: str):
+        self.system_message = system_message
+        self.shots = shots
+        self.user_query = user_query
+
+    def to_openai_form(self) -> list[dict[str, str]]:
+        rst = []
+        if self.system_message is not None:
+            rst.append({"role": "system", "content": self.system_message})
+        for q, a in self.shots:
+            rst.append({"role": "user", "content": q})
+            rst.append({"role": "assistant", "content": a})
+        rst.append({"role": "user", "content": self.user_query})
+        return rst
+
+    def __str__(self):
+        res = f"===System===\n{self.system_message}\n\n"
+        for q, a in self.shots:
+            res += f"===User===\n{q}\n\n===Assistant===\n{a}\n\n"
+        res += f"===User===\n{self.user_query}"
+        return res
 
 
 class LLMService:
