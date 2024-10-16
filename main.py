@@ -25,4 +25,6 @@ if __name__ == '__main__':
                                  model="gpt-4o-mini",
                                  temperature=1.0,
                                  return_str=True,
-                                 title="math"))
+                                 title="math",
+                                 logprobs=True,
+                                 top_logprobs=5))

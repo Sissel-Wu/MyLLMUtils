@@ -135,9 +135,10 @@ class LLMService:
                       model: str,
                       temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
                       return_str: bool = True,
-                      title: str | None = None) -> str | ChatCompletion:
+                      title: str | None = None,
+                      **kwargs) -> str | ChatCompletion:
         """
-        Query the chat completion API with the given messages.
+        Query the chat completion API with the given messages. For params not listed here, see OpenAI's API doc.
         :param messages: The messages to send.
         :param model: The model name.
         :param temperature: The temperature.
@@ -149,7 +150,8 @@ class LLMService:
         """
         response = self._client.chat.completions.create(messages=messages.to_openai_form(),
                                                         model=model,
-                                                        temperature=temperature)
+                                                        temperature=temperature,
+                                                        **kwargs)
         return self._process_response(messages, response, title, return_str)
 
     def simple_chat(self,
