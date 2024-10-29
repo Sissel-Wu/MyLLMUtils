@@ -25,6 +25,13 @@ if __name__ == '__main__':
                                  model="gpt-4o-mini",
                                  temperature=1.0,
                                  return_str=True,
-                                 title="math",
+                                 title="math"))
+
+    messages = ZeroShotMessages(user_query="There are three balls (red, blue, blue) in a black box. Pick a random ball from the box, what is the color? Answer randomly.")
+    print(chat_llm.chat_complete(messages,
+                                 model="gpt-4o-mini",
+                                 temperature=1.0,
+                                 return_str=True,
+                                 title="random_color",
                                  logprobs=True,
-                                 top_logprobs=5))
+                                 top_logprobs=10))
