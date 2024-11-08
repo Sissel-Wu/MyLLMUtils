@@ -172,6 +172,15 @@ class LLMService:
                                                         model=model)
         return self._process_response(messages, response, None, return_str)
 
+    @staticmethod
+    def check_prompt(message: Messages) -> str:
+        """
+        Check the prompt without sending it to the chat completion API.
+        :param message: The message to send.
+        :return: a string representing the prompt.
+        """
+        return str(message)
+
     def _process_response(self,
                           messages: Messages,
                           response: ChatCompletion,
