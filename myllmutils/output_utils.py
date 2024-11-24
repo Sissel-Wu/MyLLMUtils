@@ -1,6 +1,6 @@
 import json
 
-type Query = list[dict[str, str]]
+Query = list[dict[str, str]]
 
 
 class ResponseHelper:
