@@ -9,10 +9,12 @@ def about() -> str:
     base_url = environ.get("MYLLM_URL")
     if not base_url:
         base_url = "N/A"
+    oai_api_key = "set" if environ.get("OPENAI_API_KEY") else "not set"
+    my_api_key = "set and replacing OPENAI_API_KEY" if environ.get("MYLLM_API_KEY") else "not set"
     res = "\n".join([
         "Configuration:",
-        f"- env OPENAI_API_KEY is {"set" if environ.get("OPENAI_API_KEY") else "not set"}.",
-        f"- env MYLLM_API_KEY is {"set and replacing OPENAI_API_KEY" if environ.get("MYLLM_API_KEY") else "not set"}.",
+        f"- env OPENAI_API_KEY is {oai_api_key}.",
+        f"- env MYLLM_API_KEY is {my_api_key}.",
         f"- env MYLLM_URL is {base_url}."
     ])
     return res
