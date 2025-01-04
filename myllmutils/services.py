@@ -154,6 +154,20 @@ class LLMService:
                                                         **kwargs)
         return self._process_response(messages, response, title, return_str)
 
+    def chat_complete_greedy(self,
+                             messages: Messages,
+                             model: str,
+                             return_str: bool = True,
+                             title: str | None = None,
+                             **kwargs) -> str | ChatCompletion:
+        """
+        Query the chat completion API with the given messages with the greedy sampling by setting top_p=0.
+        As suggested by OpenAI, we do not set both top_p and temperature.
+        Params are the same as chat_complete.
+        """
+        kwargs["top_p"] = 0.0
+        return self.chat_complete(messages, model, return_str=return_str, title=title, **kwargs)
+
     def simple_chat(self,
                     message: str,
                     system_message: str | None = None,

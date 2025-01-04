@@ -35,3 +35,17 @@ if __name__ == '__main__':
                                  title="random_color",
                                  logprobs=True,
                                  top_logprobs=10))
+
+    messages = ZeroShotMessages(user_query="Pick a random substring in \"woijroi23oijovjasoijweijrowjieorjowiejr\".")
+    for _ in range(10):
+        print(chat_llm.chat_complete(messages,
+                                     model="gpt-4o-mini",
+                                     temperature=1.0,
+                                     return_str=True,
+                                     title="random_substr"))
+
+    for _ in range(10):
+        print(chat_llm.chat_complete_greedy(messages,
+                                            model="gpt-4o-mini",
+                                            return_str=True,
+                                            title="random_substr_greedy"))
