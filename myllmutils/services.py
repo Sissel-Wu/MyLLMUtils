@@ -165,7 +165,7 @@ class LLMService:
         As suggested by OpenAI, we do not set both top_p and temperature.
         Params are the same as chat_complete.
         """
-        kwargs["top_p"] = 0.0
+        kwargs["top_p"] = 0.00000001
         return self.chat_complete(messages, model, return_str=return_str, title=title, **kwargs)
 
     def simple_chat(self,
