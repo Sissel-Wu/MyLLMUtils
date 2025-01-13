@@ -7,20 +7,27 @@ class ResponseHelper:
     def __init__(self, response: dict):
         self.raw_response = response
 
-    def get_logprobs_at(self, index: int) -> list[(str, float)]:
+    def get_logprobs_at(self, index: int, choice=0) -> list[(str, float)]:
         """
         Get the top logprobs at a specific index.
         :param index: index of the token of the response content.
+        :param choice: index of the choice.
         :return:
         """
-        top_logprobs = self.raw_response["choices"][0]["logprobs"]["content"][index]["top_logprobs"]
+        top_logprobs = self.raw_response["choices"][choice]["logprobs"]["content"][index]["top_logprobs"]
         return [(elem["token"], elem["logprob"]) for elem in top_logprobs]
 
-    def content(self) -> str:
+    def content(self, choice=0) -> str:
         """
         Return the content of the response.
         """
-        return self.raw_response["choices"][0]["message"]["content"]
+        return self.raw_response["choices"][choice]["message"]["content"]
+
+    def num_choices(self):
+        """
+        Return the number of choices in the response.
+        """
+        return len(self.raw_response["choices"])
 
 
 def load_from_json_file(file_path: str) -> (Query, ResponseHelper):
@@ -36,6 +43,7 @@ def load_from_json_file(file_path: str) -> (Query, ResponseHelper):
 
 
 if __name__ == '__main__':
+    # test logprobs
     p0, rh = load_from_json_file("../llm_output/raw/random_color.json")
     print(p0[0]["role"])
     print(p0[0]["content"])
@@ -43,3 +51,9 @@ if __name__ == '__main__':
     logprobs = rh.get_logprobs_at(-2)
     for k, v in logprobs:
         print(f"- '{k}': {v}")
+
+    # test num_choices
+    p0, rh = load_from_json_file("../llm_output/raw/random_substr.json")
+    print(rh.num_choices())
+    print(rh.content(0))
+    print(rh.content(4))

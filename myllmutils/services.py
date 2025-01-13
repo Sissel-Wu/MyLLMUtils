@@ -199,18 +199,18 @@ class LLMService:
                           messages: Messages,
                           response: ChatCompletion,
                           title: str | None,
-                          return_str: bool) -> str | ChatCompletion:
+                          return_str: bool) -> str | list[str] | ChatCompletion:
         """
         Process the response from the chat completion API. Process includes:
-        - If self.output_dir is set, save the response to a file.
+        - If self.output_dir is set, save the response to the directory.
         - If return_str is True, return the first choice as a string.
         :param messages: The messages.
         :param response: The response.
-        :param title: The title for the files to dump.
+        :param title: The title for the files to dump. If more than one response, the file titles under "output_dir/str" are appended with "-index".
         :return: The processed response.
         """
-        # TODO: handle more than one response
-
+        num_choices = len(response.choices)
+        index_suffices = [""] if num_choices == 1 else [f"-{i}" for i in range(num_choices)]
         if self.output_dir:
             os.makedirs(f"{self.output_dir}/raw", exist_ok=True)
             os.makedirs(f"{self.output_dir}/str", exist_ok=True)
@@ -218,20 +218,23 @@ class LLMService:
 
             if title:
                 raw_file = f"{self.output_dir}/raw/{title}.json"
-                str_file = f"{self.output_dir}/str/{title}.txt"
+                str_files = [f"{self.output_dir}/str/{title}{suffix}.txt" for suffix in index_suffices]
             else:
                 raw_file = f"{self.output_dir}/raw/chat-{datetime_now}.json"
-                str_file = f"{self.output_dir}/str/chat-{datetime_now}.txt"
+                str_files = [f"{self.output_dir}/str/chat-{datetime_now}{suffix}.txt" for suffix in index_suffices]
 
             with open(raw_file, "w") as f:
                 parsed_json = json.loads(response.model_dump_json())
                 obj = {"query": messages.to_openai_form(), "response": parsed_json}
                 f.write(json.dumps(obj, indent=2))
-            with open(str_file, "w") as f:
-                query_str = str(messages)
-                combined_str = f"{query_str}\n\n===Response===\n{response.choices[0].message.content}"
-                f.write(combined_str)
+
+            for i in range(num_choices):
+                str_file = str_files[i]
+                with open(str_file, "w") as f:
+                    query_str = str(messages)
+                    combined_str = f"{query_str}\n\n===Response===\n{response.choices[i].message.content}"
+                    f.write(combined_str)
 
         if return_str:
-            return response.choices[0].message.content
+            return [response.choices[i].message.content for i in range(num_choices)]
         return response
