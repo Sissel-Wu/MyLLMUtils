@@ -122,7 +122,7 @@ class LLMService:
         :return: The raw response from OpenAI.
         """
         if method.startswith("text-embedding-3"):
-            encoding = tiktoken.get_encoding('cl100k_base')  # for 3rd-gen embedding models
+            encoding = tiktoken.get_encoding('cl100k_base')  # for 3rd-gen embedding models TODO: compatibility with tiktoken 0.7.0
             token_sizes = len(encoding.encode(document))
             print('tokens(tiktoken): ', token_sizes)
             raw_response = self._client.embeddings.create(input=[document], model=method)
