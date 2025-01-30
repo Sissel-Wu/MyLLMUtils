@@ -223,8 +223,8 @@ class LLMService:
                 raw_file = f"{self.output_dir}/raw/chat-{datetime_now}.json"
                 str_files = [f"{self.output_dir}/str/chat-{datetime_now}{suffix}.txt" for suffix in index_suffices]
 
+            parsed_json = json.loads(response.model_dump_json())
             with open(raw_file, "w") as f:
-                parsed_json = json.loads(response.model_dump_json())
                 obj = {"query": messages.to_openai_form(), "response": parsed_json}
                 f.write(json.dumps(obj, indent=2))
 
@@ -232,7 +232,11 @@ class LLMService:
                 str_file = str_files[i]
                 with open(str_file, "w") as f:
                     query_str = str(messages)
-                    combined_str = f"{query_str}\n\n===Response===\n{response.choices[i].message.content}"
+                    message = parsed_json["choices"][i]["message"]
+                    resp_content = message["content"]
+                    combined_str = f"{query_str}\n\n===Response===\n{resp_content}"
+                    if "reasoning_content" in message:
+                        combined_str += f"\n\n===Reasoning===\n{message['reasoning_content']}"
                     f.write(combined_str)
 
         if return_str:

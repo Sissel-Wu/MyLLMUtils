@@ -23,6 +23,15 @@ class ResponseHelper:
         """
         return self.raw_response["choices"][choice]["message"]["content"]
 
+    def reasoning_content(self, choice=0) -> str | None:
+        """
+        Return the reasoning content of the response, if any.
+        """
+        message = self.raw_response["choices"][choice]["message"]
+        if "reasoning_content" in message:
+            return message["reasoning_content"]
+        return None
+
     def num_choices(self):
         """
         Return the number of choices in the response.
@@ -57,3 +66,7 @@ if __name__ == '__main__':
     print(rh.num_choices())
     print(rh.content(0))
     print(rh.content(4))
+
+    # test reasoning_content
+    _, rh = load_from_json_file("../llm_output/raw/calc_reasoning.json")
+    print(rh.reasoning_content(0))

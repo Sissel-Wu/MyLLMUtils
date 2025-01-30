@@ -9,7 +9,7 @@ readme = "README.md"
 python = "^3.10"
 openai = "^1.51.2"
 tiktoken = "^0.7.0"
-
+httpx = { version = "0.25.2", extras = ["socks"] }
 
 [build-system]
 requires = ["poetry-core"]

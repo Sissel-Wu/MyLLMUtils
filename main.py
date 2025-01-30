@@ -38,16 +38,24 @@ if __name__ == '__main__':
                                  top_logprobs=10))
 
     messages = ZeroShotMessages(user_query="Pick a random substring in \"woijroi23oijovjasoijweijrowjieorjowiejr\".")
-
     print(chat_llm.chat_complete(messages,
                                  model="gpt-4o-mini",
                                  temperature=1.0,
                                  return_str=True,
                                  title="random_substr",
                                  n=5))
-
     print(chat_llm.chat_complete_greedy(messages,
                                         model="gpt-4o-mini",
                                         return_str=True,
                                         title="random_substr_greedy",
                                         n=5))
+
+    import os
+    chat_llm = LLMService("https://api.deepseek.com", os.environ.get("DS_API_KEY"))
+    chat_llm.set_output_dir("llm_output")
+    print(chat_llm.chat_complete(ZeroShotMessages(user_query="What is the sum of 124 and 789?"),
+                                 model="deepseek-reasoner",
+                                 temperature=0.6,
+                                 return_str=True,
+                                 title="calc_reasoning",
+                                 n=1))
