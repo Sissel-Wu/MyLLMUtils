@@ -7,6 +7,7 @@ from os import environ
 import os
 from datetime import datetime
 import json
+from myllmutils import CacheHelper
 
 
 class Messages(ABC):
@@ -110,6 +111,9 @@ class LLMService:
         :param output_dir: The output directory.
         """
         self.output_dir = output_dir
+
+    def get_output_cache(self) -> CacheHelper:
+        return CacheHelper(self.output_dir)
 
     def embed(self,
               document: str,

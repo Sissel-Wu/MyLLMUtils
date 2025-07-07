@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 Query = list[dict[str, str]]
 
@@ -39,7 +40,7 @@ class ResponseHelper:
         return len(self.raw_response["choices"])
 
 
-def load_from_json_file(file_path: str) -> (Query, ResponseHelper):
+def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper):
     """
     Load a query-response pair from a JSON file dumped by this library.
     :param file_path: path to the json file.
@@ -49,6 +50,22 @@ def load_from_json_file(file_path: str) -> (Query, ResponseHelper):
         js_obj = json.load(f)
         q, r = js_obj["query"], js_obj["response"]
         return q, ResponseHelper(r)
+
+
+class CacheHelper:
+    def __init__(self, dir_path: str | Path):
+        self.dir = Path(dir_path) if isinstance(dir_path, str) else dir_path
+
+    def get(self, name: str) -> (Query, ResponseHelper):
+        """
+        Get a query-response pair from the cache.
+        :param name: name of the query-response pair.
+        :return: the corresponding tuple.
+        """
+        file_path = self.dir / "raw" / f"{name}.json"
+        if not file_path.exists():
+            raise FileNotFoundError(f"Cache file {file_path} does not exist.")
+        return load_from_json_file(file_path)
 
 
 if __name__ == '__main__':
@@ -70,3 +87,7 @@ if __name__ == '__main__':
     # test reasoning_content
     _, rh = load_from_json_file("../llm_output/raw/calc_reasoning.json")
     print(rh.reasoning_content(0))
+
+    cache_helper = CacheHelper("../llm_output")
+    _, rh2 = cache_helper.get("calc_reasoning")
+    assert rh.reasoning_content(0) == rh2.reasoning_content(0)
