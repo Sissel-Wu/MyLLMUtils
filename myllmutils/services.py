@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 import json
 from myllmutils.output_utils import CacheHelper
+import httpx
 
 
 class Messages(ABC):
@@ -57,7 +58,7 @@ class FewShotMessages(Messages):
 
     def __init__(self,
                  system_message: str,
-                 shots: list[(str, str)],
+                 shots: list[tuple[str, str]],
                  user_query: str):
         self.system_message = system_message
         self.shots = shots
@@ -84,7 +85,9 @@ class FewShotMessages(Messages):
 class LLMService:
     def __init__(self,
                  base_url: str | None = None,
-                 api_key: str | None = None):
+                 api_key: str | None = None,
+                 output_dir: str | None = None,
+                 disable_ssl_verify: bool = False):
         """
         Initialize the LLM service.
         :param base_url: If None, the env variable "MYLLM_URL" is used.
@@ -92,6 +95,8 @@ class LLMService:
          If you want to use compatible LLMs, specify the base URL, e.g., "http://localhost:8000/v1/".
         :param api_key: If None, the env variable "MYLLM_API_KEY" is used.
          If the env variable is not set, env variable "OPENAI_API_KEY" is used.
+        :param output_dir: If set, the responses are dumped to the directory.
+        :param disable_ssl_verify: If True, disable SSL verification. Usually only set when using corporate VPNs. Default is False.
         """
         if base_url is None:
             base_url = environ.get("MYLLM_URL")
@@ -101,9 +106,14 @@ class LLMService:
             api_key = environ.get("MYLLM_API_KEY")
         if api_key is None:
             api_key = environ.get("OPENAI_API_KEY")
-        self._client = OpenAI(api_key=api_key,
-                              base_url=base_url)
-        self.output_dir = None
+
+        self.output_dir = output_dir
+
+        if disable_ssl_verify:
+            http_client = httpx.Client(verify=False)
+            self._client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
+        else:
+            self._client = OpenAI(api_key=api_key, base_url=base_url)
 
     def set_output_dir(self, output_dir: str):
         """
@@ -176,19 +186,21 @@ class LLMService:
                     message: str,
                     system_message: str | None = None,
                     model: str = "gpt-4o-mini",
-                    return_str: bool = True) -> str | ChatCompletion:
+                    return_str: bool = True,
+                    title: str | None = None) -> str | ChatCompletion:
         """
         A simple chat function, by default returning the single response as a string.
         :param message: The message (string) to send.
         :param system_message: The system message (string) to send.
         :param model: The model name, e.g., "gpt-4o-mini".
         :param return_str: If True (default), return the response as a string. Otherwise, return the raw response.
+        :param title: The title for the files to dump.
         :return: A string or the raw response.
         """
         messages = ZeroShotMessages(message, system_message)
         response = self._client.chat.completions.create(messages=messages.to_openai_form(),
                                                         model=model)
-        return self._process_response(messages, response, None, return_str)
+        return self._process_response(messages, response, title, return_str)
 
     @staticmethod
     def check_prompt(message: Messages) -> str:

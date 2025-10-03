@@ -8,7 +8,7 @@ class ResponseHelper:
     def __init__(self, response: dict):
         self.raw_response = response
 
-    def get_logprobs_at(self, index: int, choice=0) -> list[(str, float)]:
+    def get_logprobs_at(self, index: int, choice=0) -> list[tuple[str, float]]:
         """
         Get the top logprobs at a specific index.
         :param index: index of the token of the response content.

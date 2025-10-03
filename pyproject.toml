@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "myllmutils"
-version = "0.2.1"
-description = "A lightweight library to ease LLM use"
+version = "0.2.2"
+description = "A lightweight library to ease LLM query and storage"
 authors = ["Sissel-Wu <sissel126@gmail.com>"]
 readme = "README.md"
 
