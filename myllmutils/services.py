@@ -246,7 +246,7 @@ class LLMService:
 
             for i in range(num_choices):
                 str_file = str_files[i]
-                with open(str_file, "w") as f:
+                with open(str_file, "w", encoding="utf-8") as f:
                     query_str = str(messages)
                     message = parsed_json["choices"][i]["message"]
                     resp_content = message["content"]
