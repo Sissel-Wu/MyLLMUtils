@@ -1,14 +1,14 @@
 [tool.poetry]
 name = "myllmutils"
-version = "0.2.3"
+version = "0.2.4"
 description = "A lightweight library to ease LLM query and storage"
 authors = ["Sissel-Wu <sissel126@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-openai = "^1.51.2"
-tiktoken = "^0.7.0"
+openai = "^2.1"
+tiktoken = "^0.11"
 httpx = { version = "0.25.2", extras = ["socks"] }
 
 [build-system]

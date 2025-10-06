@@ -76,9 +76,9 @@ if __name__ == '__main__':
     # check the configuration
     print(myllmutils.about())
 
-    # example_zeroshot()
+    example_zeroshot()
     # example_disable_ssl()
     # example_fewshot()
     # example_logprobs()
     # example_sampling()
-    example_deepseek()
+    # example_deepseek()
