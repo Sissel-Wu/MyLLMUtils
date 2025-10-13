@@ -72,13 +72,33 @@ def example_deepseek():
                                  title="calc_reasoning",
                                  n=1))
 
+def example_old_cache():
+    chat_llm = LLMService(output_dir="llm_output", disable_ssl_verify=True)
+    print(chat_llm.simple_chat("How are you doing?",
+                               system_message="You are a cool girl and talk in that vibe.",
+                               model="gpt-5-nano",
+                               return_str=True,
+                               use_cache="old-forced"))
+
+def example_new_cache():
+    chat_llm = LLMService(output_dir="llm_output")
+    messages = ZeroShotMessages(user_query="How are you doing?",
+                                system_message="You are a cool girl and talk in that vibe.")
+    print(chat_llm.chat_complete(messages,
+                                 model="gpt-5-nano",
+                                 temperature=1.0,
+                                 return_str=True,
+                                 use_cache="new-forced"))
+
 if __name__ == '__main__':
     # check the configuration
     print(myllmutils.about())
 
-    example_zeroshot()
+    # example_zeroshot()
     # example_disable_ssl()
     # example_fewshot()
     # example_logprobs()
     # example_sampling()
     # example_deepseek()
+    example_old_cache()
+    example_new_cache()

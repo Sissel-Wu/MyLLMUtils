@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+from typing import Any
 
 Query = list[dict[str, str]]
+Params = dict[str, Any]
 
 
 class ResponseHelper:
@@ -40,7 +42,7 @@ class ResponseHelper:
         return len(self.raw_response["choices"])
 
 
-def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper):
+def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params):
     """
     Load a query-response pair from a JSON file dumped by this library.
     :param file_path: path to the json file.
@@ -48,15 +50,32 @@ def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper):
     """
     with open(file_path, "r") as f:
         js_obj = json.load(f)
-        q, r = js_obj["query"], js_obj["response"]
-        return q, ResponseHelper(r)
+        q, r, ps = js_obj["query"], js_obj["response"], js_obj["params"] if "params" in js_obj else None
+        return q, ResponseHelper(r), ps
+
+
+def _to_key(query: Query, params: dict[str, Any] | None):
+    key = (tuple((m["role"], m["content"]) for m in query), tuple(sorted(params.items())) if params else None)
+    return key
+
+
+class _QueryCache:
+    def __init__(self):
+        self._map = {}
+
+    def add(self, query: Query, response: ResponseHelper, params: dict[str, Any] | None):
+        self._map[_to_key(query, params)] = response
+
+    def get(self, query: Query, params: dict[str, Any] | None) -> ResponseHelper | None:
+        return self._map.get(_to_key(query, params), None)
 
 
 class CacheHelper:
     def __init__(self, dir_path: str | Path):
         self.dir = Path(dir_path) if isinstance(dir_path, str) else dir_path
+        self.map = None
 
-    def get(self, name: str) -> (Query, ResponseHelper):
+    def get(self, name: str) -> (Query, ResponseHelper, Params):
         """
         Get a query-response pair from the cache.
         :param name: name of the query-response pair.
@@ -67,10 +86,49 @@ class CacheHelper:
             raise FileNotFoundError(f"Cache file {file_path} does not exist.")
         return load_from_json_file(file_path)
 
+    def _get_map(self) -> _QueryCache:
+        """
+        Get (initialize if nonexistent) the map from queries to responses.
+        :return:
+        """
+        if self.map is not None:
+            return self.map
+        self.map = _QueryCache()
+        raw_dir = self.dir / "raw"
+        if not raw_dir.exists():  # empty cache
+            return self.map
+        if not raw_dir.is_dir():
+            raise FileNotFoundError(f"Cache directory {raw_dir} is not a directory.")
+        for file_path in raw_dir.glob("*.json"):
+            q, r, ps = load_from_json_file(file_path)
+            self.map.add(q, r, ps)
+        return self.map
+
+    def get_by_query(self, query: Query, params: Params | None) -> ResponseHelper | None:
+        """
+        Get a response from the cache by query.
+        :param query: the query.
+        :param params: the parameters, e.g., temperature, top_p. Use None for backward compatibility.
+        :return: the corresponding response.
+        """
+        m = self._get_map()
+        return m.get(query, params)
+
+    def add(self, query: Query, response: ResponseHelper, params: Params):
+        """
+        Add a query-response pair to the cache.
+        :param query: the query.
+        :param response: the response.
+        :param params: the parameters, e.g., temperature, top_p.
+        :return:
+        """
+        m = self._get_map()
+        m.add(query, response, params)
+
 
 if __name__ == '__main__':
     # test logprobs
-    p0, rh = load_from_json_file("../llm_output/raw/random_color.json")
+    p0, rh, _ = load_from_json_file("../llm_output/raw/random_color.json")
     print(p0[0]["role"])
     print(p0[0]["content"])
     print(rh.content())
@@ -79,15 +137,18 @@ if __name__ == '__main__':
         print(f"- '{k}': {v}")
 
     # test num_choices
-    p0, rh = load_from_json_file("../llm_output/raw/random_substr.json")
+    p0, rh, _ = load_from_json_file("../llm_output/raw/random_substr.json")
     print(rh.num_choices())
     print(rh.content(0))
     print(rh.content(4))
 
     # test reasoning_content
-    _, rh = load_from_json_file("../llm_output/raw/calc_reasoning.json")
+    _, rh, _ = load_from_json_file("../llm_output/raw/calc_reasoning.json")
     print(rh.reasoning_content(0))
 
     cache_helper = CacheHelper("../llm_output")
-    _, rh2 = cache_helper.get("calc_reasoning")
+    _, rh2, _ = cache_helper.get("calc_reasoning")
     assert rh.reasoning_content(0) == rh2.reasoning_content(0)
+
+    rh3 = cache_helper.get_by_query([{"role": "user", "content": "What is the sum of 124 and 789?"}], None) # calc_reasoning
+    assert rh2.reasoning_content(0) == rh3.reasoning_content(0)

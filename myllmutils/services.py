@@ -1,3 +1,5 @@
+from typing import Any
+
 from openai import OpenAI
 import openai
 from openai.types.chat import ChatCompletion
@@ -7,7 +9,7 @@ from os import environ
 import os
 from datetime import datetime
 import json
-from myllmutils.output_utils import CacheHelper
+from myllmutils.output_utils import CacheHelper, ResponseHelper
 import httpx
 
 
@@ -108,6 +110,7 @@ class LLMService:
             api_key = environ.get("OPENAI_API_KEY")
 
         self.output_dir = output_dir
+        self.cache_helper = CacheHelper(self.output_dir)
 
         if disable_ssl_verify:
             http_client = httpx.Client(verify=False)
@@ -121,9 +124,6 @@ class LLMService:
         :param output_dir: The output directory.
         """
         self.output_dir = output_dir
-
-    def get_output_cache(self) -> CacheHelper:
-        return CacheHelper(self.output_dir)
 
     def embed(self,
               document: str,
@@ -150,7 +150,8 @@ class LLMService:
                       temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
                       return_str: bool = True,
                       title: str | None = None,
-                      **kwargs) -> str | ChatCompletion:
+                      use_cache: str = "no",
+                      **kwargs) -> str | ChatCompletion | ResponseHelper:
         """
         Query the chat completion API with the given messages. For params not listed here, see OpenAI's API doc.
         :param messages: The messages to send.
@@ -158,21 +159,43 @@ class LLMService:
         :param temperature: The temperature.
         :param return_str: If True (default), return the response as a string. Otherwise, return the raw response.
         :param title: The title for the files to dump.
-         Note that the files are dumped only if self.output_dir is set.
-         May overwrite the existing files.
-        :return: The raw response in OpenAI format.
+        Note that the files are dumped only if self.output_dir is set.
+        May overwrite the existing files.
+        :param use_cache: "no" (default), or "old", or "old-forced", or "new", or "new-forced".
+        "no" means not using cache, "old" means searching cache without "params" for backward compatibility, "new" means searching with "params";
+        "-forced" means if not in cache, throw exceptions; without "-forced", proceed to send a new query and add to cache (with params).
+        :return: The raw response in OpenAI format, or string if return_str is True, or ResponseHelper if return_str is False and use_cache and hit.
         """
-        response = self._client.chat.completions.create(messages=messages.to_openai_form(),
-                                                        model=model,
-                                                        temperature=temperature,
-                                                        **kwargs)
-        return self._process_response(messages, response, title, return_str)
+        params = {"model": model, "temperature": temperature, **kwargs}
+        response = None
+        query = messages.to_openai_form()
+        if use_cache != "no":
+            print("Searching for cached response...")
+            response_helper = self.cache_helper.get_by_query(query, params if use_cache.startswith("new") else None)
+            if response_helper is None:
+                print("Not in cache.")
+                if use_cache.endswith("forced"):
+                    raise ValueError("Not in cache.")
+            else:
+                print("Hit.")
+                if return_str:
+                    return response_helper.content()
+                else:
+                    return response_helper
+        if not response:
+            response = self._client.chat.completions.create(messages=query,
+                                                            model=model,
+                                                            temperature=temperature,
+                                                            **kwargs)
+            self.cache_helper.add(query, ResponseHelper(json.loads(response.model_dump_json())), params)
+        return self._process_response(messages, params, response, title, return_str)
 
     def chat_complete_greedy(self,
                              messages: Messages,
                              model: str,
                              return_str: bool = True,
                              title: str | None = None,
+                             use_cache: str = "no",
                              **kwargs) -> str | ChatCompletion:
         """
         Query the chat completion API with the given messages with the greedy sampling by setting top_p=0.
@@ -180,27 +203,27 @@ class LLMService:
         Params are the same as chat_complete.
         """
         kwargs["top_p"] = 0.00000001
-        return self.chat_complete(messages, model, return_str=return_str, title=title, **kwargs)
+        return self.chat_complete(messages, model, return_str=return_str, title=title, use_cache=use_cache, **kwargs)
 
     def simple_chat(self,
                     message: str,
                     system_message: str | None = None,
-                    model: str = "gpt-4o-mini",
+                    model: str = "gpt-5-nano",
                     return_str: bool = True,
-                    title: str | None = None) -> str | ChatCompletion:
+                    title: str | None = None,
+                    use_cache: str = "no") -> str | ChatCompletion:
         """
         A simple chat function, by default returning the single response as a string.
         :param message: The message (string) to send.
         :param system_message: The system message (string) to send.
-        :param model: The model name, e.g., "gpt-4o-mini".
+        :param model: The model name, e.g., "gpt-5-nano".
         :param return_str: If True (default), return the response as a string. Otherwise, return the raw response.
         :param title: The title for the files to dump.
+        :param use_cache: See chat_complete.
         :return: A string or the raw response.
         """
         messages = ZeroShotMessages(message, system_message)
-        response = self._client.chat.completions.create(messages=messages.to_openai_form(),
-                                                        model=model)
-        return self._process_response(messages, response, title, return_str)
+        return self.chat_complete(messages, model, return_str=return_str, title=title, use_cache=use_cache)
 
     @staticmethod
     def check_prompt(message: Messages) -> str:
@@ -213,6 +236,7 @@ class LLMService:
 
     def _process_response(self,
                           messages: Messages,
+                          params: dict[str, Any],
                           response: ChatCompletion,
                           title: str | None,
                           return_str: bool) -> str | list[str] | ChatCompletion:
@@ -221,6 +245,7 @@ class LLMService:
         - If self.output_dir is set, save the response to the directory.
         - If return_str is True, return the first choice as a string.
         :param messages: The messages.
+        :param params: The query parameters, e.g., model, temperature, top_p.
         :param response: The response.
         :param title: The title for the files to dump. If more than one response, the file titles under "output_dir/str" are appended with "-index".
         :return: The processed response.
@@ -241,7 +266,7 @@ class LLMService:
 
             parsed_json = json.loads(response.model_dump_json())
             with open(raw_file, "w") as f:
-                obj = {"query": messages.to_openai_form(), "response": parsed_json}
+                obj = {"query": messages.to_openai_form(), "params": params, "response": parsed_json}
                 f.write(json.dumps(obj, indent=2))
 
             for i in range(num_choices):
