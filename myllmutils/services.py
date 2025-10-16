@@ -151,7 +151,7 @@ class LLMService:
                       return_str: bool = True,
                       title: str | None = None,
                       use_cache: str = "no",
-                      **kwargs) -> str | ChatCompletion | ResponseHelper:
+                      **kwargs) -> str | list[str] | ChatCompletion | ResponseHelper:
         """
         Query the chat completion API with the given messages. For params not listed here, see OpenAI's API doc.
         :param messages: The messages to send.
@@ -281,5 +281,6 @@ class LLMService:
                     f.write(combined_str)
 
         if return_str:
-            return [response.choices[i].message.content for i in range(num_choices)]
+            all_content = [response.choices[i].message.content for i in range(num_choices)]
+            return all_content[0] if num_choices == 1 else all_content
         return response

@@ -50,15 +50,18 @@ def example_sampling():
     chat_llm = LLMService(output_dir="llm_output")
     messages = ZeroShotMessages(user_query="Pick a random substring in \"woijroi23oijovjasoijweijrowjieorjowiejr\".")
     print(chat_llm.chat_complete(messages,
-                                 model="gpt-5-nano",
+                                 model="gpt-4o-mini",
                                  temperature=1.0,
                                  return_str=True,
                                  title="random_substr",
+                                 use_cache="new",
                                  n=5))
     print(chat_llm.chat_complete_greedy(messages,
-                                        model="gpt-5-nano",
+                                        model="gpt-4o-mini",
+                                        temperature=0.01,
                                         return_str=True,
                                         title="random_substr_greedy",
+                                        use_cache="new",
                                         n=5))
 
 def example_deepseek():
@@ -98,7 +101,7 @@ if __name__ == '__main__':
     # example_disable_ssl()
     # example_fewshot()
     # example_logprobs()
-    # example_sampling()
+    example_sampling()
     # example_deepseek()
     example_old_cache()
-    example_new_cache()
+    # example_new_cache()

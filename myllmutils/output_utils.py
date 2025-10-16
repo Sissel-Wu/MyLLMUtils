@@ -20,11 +20,19 @@ class ResponseHelper:
         top_logprobs = self.raw_response["choices"][choice]["logprobs"]["content"][index]["top_logprobs"]
         return [(elem["token"], elem["logprob"]) for elem in top_logprobs]
 
-    def content(self, choice=0) -> str:
+    def content(self, choice: int | str | None = None) -> str | list[str]:
         """
-        Return the content of the response.
+        Return the content of the response. If choice="all", return a list of all choices. By default, return all if there is >1 choice, otherwise return the only choice.
         """
-        return self.raw_response["choices"][choice]["message"]["content"]
+        all_content = [c["message"]["content"] for c in self.raw_response["choices"]]
+        if type(choice) is int:
+            return all_content[choice]
+        elif choice is None:
+            return all_content[0] if len(all_content) == 1 else all_content
+        elif choice == "all":
+            return all_content
+        else:
+            raise ValueError("choice must be an integer or 'all'")
 
     def reasoning_content(self, choice=0) -> str | None:
         """
