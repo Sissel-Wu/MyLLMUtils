@@ -54,14 +54,14 @@ def example_sampling():
                                  temperature=1.0,
                                  return_str=True,
                                  title="random_substr",
-                                 use_cache="new",
+                                 use_cache=True,
                                  n=5))
     print(chat_llm.chat_complete_greedy(messages,
                                         model="gpt-4o-mini",
                                         temperature=0.01,
                                         return_str=True,
                                         title="random_substr_greedy",
-                                        use_cache="new",
+                                        use_cache=True,
                                         n=5))
 
 def example_deepseek():
@@ -75,15 +75,7 @@ def example_deepseek():
                                  title="calc_reasoning",
                                  n=1))
 
-def example_old_cache():
-    chat_llm = LLMService(output_dir="llm_output", disable_ssl_verify=True)
-    print(chat_llm.simple_chat("How are you doing?",
-                               system_message="You are a cool girl and talk in that vibe.",
-                               model="gpt-5-nano",
-                               return_str=True,
-                               use_cache="old-forced"))
-
-def example_new_cache():
+def example_cache():
     chat_llm = LLMService(output_dir="llm_output")
     messages = ZeroShotMessages(user_query="How are you doing?",
                                 system_message="You are a cool girl and talk in that vibe.")
@@ -91,7 +83,7 @@ def example_new_cache():
                                  model="gpt-5-nano",
                                  temperature=1.0,
                                  return_str=True,
-                                 use_cache="new-forced"))
+                                 use_cache=True))
 
 if __name__ == '__main__':
     # check the configuration
@@ -103,5 +95,4 @@ if __name__ == '__main__':
     # example_logprobs()
     example_sampling()
     # example_deepseek()
-    example_old_cache()
-    # example_new_cache()
+    example_cache()

@@ -150,7 +150,7 @@ class LLMService:
                       temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
                       return_str: bool = True,
                       title: str | None = None,
-                      use_cache: str = "no",
+                      use_cache: bool = False,
                       **kwargs) -> str | list[str] | ChatCompletion | ResponseHelper:
         """
         Query the chat completion API with the given messages. For params not listed here, see OpenAI's API doc.
@@ -161,21 +161,17 @@ class LLMService:
         :param title: The title for the files to dump.
         Note that the files are dumped only if self.output_dir is set.
         May overwrite the existing files.
-        :param use_cache: "no" (default), or "old", or "old-forced", or "new", or "new-forced".
-        "no" means not using cache, "old" means searching cache without "params" for backward compatibility, "new" means searching with "params";
-        "-forced" means if not in cache, throw exceptions; without "-forced", proceed to send a new query and add to cache (with params).
+        :param use_cache: False is default
         :return: The raw response in OpenAI format, or string if return_str is True, or ResponseHelper if return_str is False and use_cache and hit.
         """
         params = {"model": model, "temperature": temperature, **kwargs}
         response = None
         query = messages.to_openai_form()
-        if use_cache != "no":
+        if use_cache:
             print("Searching for cached response...")
-            response_helper = self.cache_helper.get_by_query(query, params if use_cache.startswith("new") else None)
+            response_helper = self.cache_helper.get_by_query(query, params)
             if response_helper is None:
                 print("Not in cache.")
-                if use_cache.endswith("forced"):
-                    raise ValueError("Not in cache.")
             else:
                 print("Hit.")
                 if return_str:
@@ -195,7 +191,7 @@ class LLMService:
                              model: str,
                              return_str: bool = True,
                              title: str | None = None,
-                             use_cache: str = "no",
+                             use_cache: bool = False,
                              **kwargs) -> str | ChatCompletion:
         """
         Query the chat completion API with the given messages with the greedy sampling by setting top_p=0.
@@ -211,7 +207,7 @@ class LLMService:
                     model: str = "gpt-5-nano",
                     return_str: bool = True,
                     title: str | None = None,
-                    use_cache: str = "no") -> str | ChatCompletion:
+                    use_cache: bool = False) -> str | ChatCompletion:
         """
         A simple chat function, by default returning the single response as a string.
         :param message: The message (string) to send.
