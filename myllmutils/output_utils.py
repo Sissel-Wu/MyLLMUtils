@@ -7,8 +7,14 @@ Params = dict[str, Any]
 
 
 class ResponseHelper:
-    def __init__(self, response: dict):
+    def __init__(self, response: dict | list[dict]) -> None:
         self.raw_response = response
+        if type(response) == dict:
+            self.choices = response["choices"]
+        else:
+            self.choices = []
+            for r in response:
+                self.choices.extend(r["choices"])
 
     def get_logprobs_at(self, index: int, choice=0) -> list[tuple[str, float]]:
         """
@@ -17,14 +23,14 @@ class ResponseHelper:
         :param choice: index of the choice.
         :return:
         """
-        top_logprobs = self.raw_response["choices"][choice]["logprobs"]["content"][index]["top_logprobs"]
+        top_logprobs = self.choices[choice]["logprobs"]["content"][index]["top_logprobs"]
         return [(elem["token"], elem["logprob"]) for elem in top_logprobs]
 
     def content(self, choice: int | str | None = None) -> str | list[str]:
         """
         Return the content of the response. If choice="all", return a list of all choices. By default, return all if there is >1 choice, otherwise return the only choice.
         """
-        all_content = [c["message"]["content"] for c in self.raw_response["choices"]]
+        all_content = [c["message"]["content"] for c in self.choices]
         if type(choice) is int:
             return all_content[choice]
         elif choice is None:
@@ -38,7 +44,7 @@ class ResponseHelper:
         """
         Return the reasoning content of the response, if any.
         """
-        message = self.raw_response["choices"][choice]["message"]
+        message = self.choices[choice]["message"]
         if "reasoning_content" in message:
             return message["reasoning_content"]
         return None
@@ -47,7 +53,7 @@ class ResponseHelper:
         """
         Return the number of choices in the response.
         """
-        return len(self.raw_response["choices"])
+        return len(self.choices)
 
 
 def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params):
@@ -58,8 +64,10 @@ def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params
     """
     with open(file_path, "r") as f:
         js_obj = json.load(f)
-        q, r, ps = js_obj["query"], js_obj["response"], js_obj["params"] if "params" in js_obj else None
-        return q, ResponseHelper(r), ps
+        q= js_obj["query"]
+        ps = js_obj["params"] if "params" in js_obj else None
+        r = ResponseHelper(js_obj["response"])
+        return q, r, ps
 
 
 def _to_key(query: Query, params: dict[str, Any] | None):

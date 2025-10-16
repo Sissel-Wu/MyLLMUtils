@@ -151,7 +151,9 @@ class LLMService:
                       return_str: bool = True,
                       title: str | None = None,
                       use_cache: bool = False,
-                      **kwargs) -> str | list[str] | ChatCompletion | ResponseHelper:
+                      n: int = 1,
+                      n_limit_per_query: int = 0,
+                      **kwargs) -> str | list[str] | ResponseHelper:
         """
         Query the chat completion API with the given messages. For params not listed here, see OpenAI's API doc.
         :param messages: The messages to send.
@@ -162,10 +164,11 @@ class LLMService:
         Note that the files are dumped only if self.output_dir is set.
         May overwrite the existing files.
         :param use_cache: False is default
+        :param n: Number of samples to obtain. Default is 1.
+        :param n_limit_per_query: If >0, limit the number of responses to n_limit_per_query per unique query (messages). Default is 0 (no limit).
         :return: The raw response in OpenAI format, or string if return_str is True, or ResponseHelper if return_str is False and use_cache and hit.
         """
-        params = {"model": model, "temperature": temperature, **kwargs}
-        response = None
+        params = {"model": model, "temperature": temperature, "n": n, "n_limit_per_query": n_limit_per_query, **kwargs}
         query = messages.to_openai_form()
         if use_cache:
             print("Searching for cached response...")
@@ -178,13 +181,23 @@ class LLMService:
                     return response_helper.content()
                 else:
                     return response_helper
-        if not response:
+
+        # send the request in batches
+        n_per_time = min(n, n_limit_per_query) if n_limit_per_query > 0 else n
+        responses = []
+        while n > 0:
+            n_sent = min(n, n_per_time)
             response = self._client.chat.completions.create(messages=query,
                                                             model=model,
                                                             temperature=temperature,
+                                                            n=n_sent,
                                                             **kwargs)
-            self.cache_helper.add(query, ResponseHelper(json.loads(response.model_dump_json())), params)
-        return self._process_response(messages, params, response, title, return_str)
+            responses.append(response)
+            n -= n_per_time
+        rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
+        if use_cache:
+            self.cache_helper.add(query, rh_obj, params)
+        return self._process_response(messages, params, rh_obj, title, return_str)
 
     def chat_complete_greedy(self,
                              messages: Messages,
@@ -192,6 +205,8 @@ class LLMService:
                              return_str: bool = True,
                              title: str | None = None,
                              use_cache: bool = False,
+                             n: int = 1,
+                             n_limit_per_query: int = 0,
                              **kwargs) -> str | ChatCompletion:
         """
         Query the chat completion API with the given messages with the greedy sampling by setting top_p=0.
@@ -233,20 +248,20 @@ class LLMService:
     def _process_response(self,
                           messages: Messages,
                           params: dict[str, Any],
-                          response: ChatCompletion,
+                          resp_helper: ResponseHelper,
                           title: str | None,
-                          return_str: bool) -> str | list[str] | ChatCompletion:
+                          return_str: bool) -> str | list[str] | ResponseHelper:
         """
         Process the response from the chat completion API. Process includes:
         - If self.output_dir is set, save the response to the directory.
         - If return_str is True, return the first choice as a string.
         :param messages: The messages.
         :param params: The query parameters, e.g., model, temperature, top_p.
-        :param response: The response.
+        :param resp_helper: The response helper.
         :param title: The title for the files to dump. If more than one response, the file titles under "output_dir/str" are appended with "-index".
         :return: The processed response.
         """
-        num_choices = len(response.choices)
+        num_choices = len(resp_helper.choices)
         index_suffices = [""] if num_choices == 1 else [f"-{i}" for i in range(num_choices)]
         if self.output_dir:
             os.makedirs(f"{self.output_dir}/raw", exist_ok=True)
@@ -260,16 +275,15 @@ class LLMService:
                 raw_file = f"{self.output_dir}/raw/chat-{datetime_now}.json"
                 str_files = [f"{self.output_dir}/str/chat-{datetime_now}{suffix}.txt" for suffix in index_suffices]
 
-            parsed_json = json.loads(response.model_dump_json())
             with open(raw_file, "w") as f:
-                obj = {"query": messages.to_openai_form(), "params": params, "response": parsed_json}
+                obj = {"query": messages.to_openai_form(), "params": params, "response": resp_helper.raw_response}
                 f.write(json.dumps(obj, indent=2))
 
             for i in range(num_choices):
                 str_file = str_files[i]
                 with open(str_file, "w", encoding="utf-8") as f:
                     query_str = str(messages)
-                    message = parsed_json["choices"][i]["message"]
+                    message = resp_helper.choices[i]["message"]
                     resp_content = message["content"]
                     combined_str = f"{query_str}\n\n===Response===\n{resp_content}"
                     if "reasoning_content" in message:
@@ -277,6 +291,5 @@ class LLMService:
                     f.write(combined_str)
 
         if return_str:
-            all_content = [response.choices[i].message.content for i in range(num_choices)]
-            return all_content[0] if num_choices == 1 else all_content
-        return response
+            return resp_helper.content()
+        return resp_helper

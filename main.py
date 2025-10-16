@@ -55,7 +55,8 @@ def example_sampling():
                                  return_str=True,
                                  title="random_substr",
                                  use_cache=True,
-                                 n=5))
+                                 n=5,
+                                 n_limit_per_query=2))
     print(chat_llm.chat_complete_greedy(messages,
                                         model="gpt-4o-mini",
                                         temperature=0.01,
@@ -91,7 +92,7 @@ if __name__ == '__main__':
 
     # example_zeroshot()
     # example_disable_ssl()
-    # example_fewshot()
+    example_fewshot()
     # example_logprobs()
     example_sampling()
     # example_deepseek()
