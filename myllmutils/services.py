@@ -100,6 +100,7 @@ class LLMService:
                  base_url: str | None = None,
                  api_key: str | None = None,
                  output_dir: str | None = None,
+                 timeout: float | openai.Timeout | None | openai.NotGiven = openai.not_given,
                  disable_ssl_verify: bool = False):
         """
         Initialize the LLM service.
@@ -125,9 +126,9 @@ class LLMService:
 
         if disable_ssl_verify:
             http_client = httpx.Client(verify=False)
-            self._client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
+            self._client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client, timeout=timeout)
         else:
-            self._client = OpenAI(api_key=api_key, base_url=base_url)
+            self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
     def set_output_dir(self, output_dir: str):
         """
