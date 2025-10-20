@@ -27,6 +27,17 @@ class Messages(ABC):
         pass
 
 
+class CompletionMessages(Messages):
+    def __init__(self, prompt: str) -> None:
+        self.prompt = prompt
+
+    def to_openai_form(self) -> list[dict[str, str]]:
+        return [{"completion": self.prompt}]
+
+    def __str__(self):
+        return f"===Prompt===\n{self.prompt}\n\n"
+
+
 class ZeroShotMessages(Messages):
     """
     Messages for zero-shot chat completion, in the form of
@@ -192,6 +203,48 @@ class LLMService:
                                                             temperature=temperature,
                                                             n=n_sent,
                                                             **kwargs)
+            responses.append(response)
+            n -= n_per_time
+        rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
+        if use_cache:
+            self.cache_helper.add(query, rh_obj, params)
+        return self._process_response(messages, params, rh_obj, title, return_str)
+
+    def complete(self, prompt: str,
+                 model: str,
+                 temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                 return_str: bool = True,
+                 title: str | None = None,
+                 use_cache: bool = False,
+                 n: int = 1,
+                 n_limit_per_query: int = 0,
+                 **kwargs) -> str | list[str] | ResponseHelper:
+        params = {"api": "complete", "model": model, "temperature": temperature, "n": n,
+                  "n_limit_per_query": n_limit_per_query, **kwargs}
+        messages = CompletionMessages(prompt)
+        if use_cache:
+            print("Searching for cached response...")
+            query = messages.to_openai_form()
+            response_helper = self.cache_helper.get_by_query(query, params)
+            if response_helper is None:
+                print("Not in cache.")
+            else:
+                print("Hit.")
+                if return_str:
+                    return response_helper.content()
+                else:
+                    return response_helper
+
+            # send the request in batches
+        n_per_time = min(n, n_limit_per_query) if n_limit_per_query > 0 else n
+        responses = []
+        while n > 0:
+            n_sent = min(n, n_per_time)
+            response = self._client.completions.create(prompt=prompt,
+                                                       model=model,
+                                                       temperature=temperature,
+                                                       n=n_sent,
+                                                       **kwargs)
             responses.append(response)
             n -= n_per_time
         rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
