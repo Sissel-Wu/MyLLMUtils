@@ -11,6 +11,9 @@ from datetime import datetime
 import json
 from myllmutils.output_utils import CacheHelper, ResponseHelper
 import httpx
+import concurrent.futures
+from threading import Lock
+import queue
 
 
 class Messages(ABC):
@@ -93,6 +96,27 @@ class FewShotMessages(Messages):
             res += f"===User===\n{q}\n\n===Assistant===\n{a}\n\n"
         res += f"===User===\n{self.user_query}"
         return res
+    
+
+class LLMClientPool:
+    def __init__(self, pool_size, base_url, api_key, timeout, disable_ssl_verify=False):
+        self.pool_size = pool_size
+        self._pool = queue.Queue(maxsize=pool_size)
+        self._lock = Lock()
+
+        for _ in range(pool_size):
+            if disable_ssl_verify:
+                http_client = httpx.Client(verify=False)
+                client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client, timeout=timeout)
+            else:
+                client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+            self._pool.put(client)
+
+    def acquire(self) -> OpenAI:
+        return self._pool.get()
+    
+    def release(self, client: OpenAI):
+        self._pool.put(client)
 
 
 class LLMService:
@@ -101,7 +125,8 @@ class LLMService:
                  api_key: str | None = None,
                  output_dir: str | None = None,
                  timeout: float | openai.Timeout | None | openai.NotGiven = openai.not_given,
-                 disable_ssl_verify: bool = False):
+                 disable_ssl_verify: bool = False,
+                 parallels: int = 1):
         """
         Initialize the LLM service.
         :param base_url: If None, the env variable "MYLLM_URL" is used.
@@ -111,6 +136,7 @@ class LLMService:
          If the env variable is not set, env variable "OPENAI_API_KEY" is used.
         :param output_dir: If set, the responses are dumped to the directory.
         :param disable_ssl_verify: If True, disable SSL verification. Usually only set when using corporate VPNs. Default is False.
+        :param parallels: If >1 (default), use that number of clients to send queries in parallel.
         """
         if base_url is None:
             base_url = environ.get("MYLLM_URL")
@@ -124,11 +150,12 @@ class LLMService:
         self.output_dir = output_dir
         self.cache_helper = CacheHelper(self.output_dir)
 
-        if disable_ssl_verify:
-            http_client = httpx.Client(verify=False)
-            self._client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client, timeout=timeout)
-        else:
-            self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        self._clients = LLMClientPool(pool_size=parallels,
+                                      base_url=base_url,
+                                      api_key=api_key,
+                                      timeout=timeout,
+                                      disable_ssl_verify=disable_ssl_verify)
+        self.parallels = parallels
 
     def set_output_dir(self, output_dir: str):
         """
@@ -151,10 +178,28 @@ class LLMService:
             encoding = tiktoken.get_encoding('cl100k_base')  # for 3rd-gen embedding models TODO: compatibility with tiktoken 0.7.0
             token_sizes = len(encoding.encode(document))
             print('tokens(tiktoken): ', token_sizes)
-            raw_response = self._client.embeddings.create(input=[document], model=method)
+            client = self._clients.acquire()
+            try:
+                raw_response = client.embeddings.create(input=[document], model=method)  # TODO parallels
+            finally:
+                self._clients.release(client)
             return raw_response
         else:
             raise ValueError(f"Unknown method: {method}")
+        
+    
+    @staticmethod
+    def _send_chat_complete(client_pool: LLMClientPool, n_per_query: int, messages: Messages, model: str, temperature: float | None | openai.NotGiven = openai.NOT_GIVEN, **kwargs) -> openai.types.chat.ChatCompletion:
+        client = client_pool.acquire()
+        try:
+            response = client.chat.completions.create(messages=messages.to_openai_form(),
+                                                      model=model,
+                                                      temperature=temperature,
+                                                      n=n_per_query)
+        finally:
+            client_pool.release(client)
+        return response
+
 
     def chat_complete(self,
                       messages: Messages,
@@ -197,15 +242,23 @@ class LLMService:
         # send the request in batches
         n_per_time = min(n, n_limit_per_query) if n_limit_per_query > 0 else n
         responses = []
-        while n > 0:
-            n_sent = min(n, n_per_time)
-            response = self._client.chat.completions.create(messages=query,
-                                                            model=model,
-                                                            temperature=temperature,
-                                                            n=n_sent,
-                                                            **kwargs)
-            responses.append(response)
-            n -= n_per_time
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallels) as executor:
+            while n > 0:
+                n_sent = min(n, n_per_time)
+                future = executor.submit(self._send_chat_complete,
+                                         self._clients,
+                                         n_sent,
+                                         messages,
+                                         model,
+                                         temperature,
+                                         **kwargs)
+                futures.append(future)
+                n -= n_sent
+            for future in concurrent.futures.as_completed(futures):
+                response = future.result()
+                responses.append(response)
+            
         rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
         if use_cache:
             self.cache_helper.add(query, rh_obj, params)
@@ -241,11 +294,16 @@ class LLMService:
         responses = []
         while n > 0:
             n_sent = min(n, n_per_time)
-            response = self._client.completions.create(prompt=prompt,
+            # TODO parallels
+            client = self._clients.acquire()
+            try:
+                response = self._clients[0].completions.create(prompt=prompt,
                                                        model=model,
                                                        temperature=temperature,
                                                        n=n_sent,
                                                        **kwargs)
+            finally:
+                self._clients.release(client)
             responses.append(response)
             n -= n_per_time
         rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])

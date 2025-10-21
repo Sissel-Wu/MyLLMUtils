@@ -85,6 +85,17 @@ def example_cache():
                                  temperature=1.0,
                                  return_str=True,
                                  use_cache=True))
+    
+def example_parallel():
+    chat_llm = LLMService(output_dir="llm_output", parallels=2)
+    messages = ZeroShotMessages(user_query="How are you doing?")
+    print(chat_llm.chat_complete(messages, 
+                                 model="deepseek-chat",
+                                 temperature=1.0,
+                                 return_str=True,
+                                 title="say_hi_parallel",
+                                 n=3,
+                                 n_limit_per_query=1))
 
 if __name__ == '__main__':
     # check the configuration
@@ -92,8 +103,9 @@ if __name__ == '__main__':
 
     # example_zeroshot()
     # example_disable_ssl()
-    example_fewshot()
+    # example_fewshot()
     # example_logprobs()
-    example_sampling()
+    # example_sampling()
     # example_deepseek()
-    example_cache()
+    # example_cache()
+    example_parallel()
