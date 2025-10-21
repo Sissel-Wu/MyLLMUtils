@@ -180,7 +180,7 @@ class LLMService:
         :param n_limit_per_query: If >0, limit the number of responses to n_limit_per_query per unique query (messages). Default is 0 (no limit).
         :return: The raw response in OpenAI format, or string if return_str is True, or ResponseHelper if return_str is False and use_cache and hit.
         """
-        params = {"model": model, "temperature": temperature, "n": n, "n_limit_per_query": n_limit_per_query, **kwargs}
+        params = {"model": model, "temperature": temperature, "n": n, **kwargs}
         query = messages.to_openai_form()
         if use_cache:
             print("Searching for cached response...")
