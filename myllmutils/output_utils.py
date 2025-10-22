@@ -55,6 +55,13 @@ class ResponseHelper:
         """
         return len(self.choices)
 
+    def chat_id(self):
+        """
+        Return the chat id of the response. If more than one response is included, return the first one.
+        """
+        resp = self.raw_response if type(self.raw_response) == dict else self.raw_response[0]
+        return resp["id"]
+
 
 def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params):
     """

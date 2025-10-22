@@ -90,12 +90,11 @@ def example_parallel():
     chat_llm = LLMService(output_dir="llm_output", parallels=2)
     messages = ZeroShotMessages(user_query="How are you doing?")
     print(chat_llm.chat_complete(messages, 
-                                 model="deepseek-chat",
+                                 model="gpt-5-nano",
                                  temperature=1.0,
                                  return_str=True,
-                                 title="say_hi_parallel",
-                                 n=3,
-                                 n_limit_per_query=1))
+                                 n=5,
+                                 n_limit_per_query=2))
 
 if __name__ == '__main__':
     # check the configuration

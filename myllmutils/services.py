@@ -384,8 +384,8 @@ class LLMService:
                 raw_file = f"{self.output_dir}/raw/{title}.json"
                 str_files = [f"{self.output_dir}/str/{title}{suffix}.txt" for suffix in index_suffices]
             else:
-                raw_file = f"{self.output_dir}/raw/chat-{datetime_now}.json"
-                str_files = [f"{self.output_dir}/str/chat-{datetime_now}{suffix}.txt" for suffix in index_suffices]
+                raw_file = f"{self.output_dir}/raw/chat-{datetime_now}-{resp_helper.chat_id()}.json"
+                str_files = [f"{self.output_dir}/str/chat-{datetime_now}{suffix}-{resp_helper.chat_id()}.txt" for suffix in index_suffices]
 
             with open(raw_file, "w") as f:
                 obj = {"query": messages.to_openai_form(), "params": params, "response": resp_helper.raw_response}
