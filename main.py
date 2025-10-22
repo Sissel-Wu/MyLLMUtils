@@ -96,6 +96,20 @@ def example_parallel():
                                  n=5,
                                  n_limit_per_query=2))
 
+def example_ignore_cache_params():
+    # A few-shot chat with an LLM
+    chat_llm_not_ignore = LLMService(output_dir="llm_output")
+    chat_llm_ignore = LLMService(output_dir="llm_output", ignore_cache_params=["temperature"])
+    messages = ZeroShotMessages(user_query="What is 2+4?")
+    print(chat_llm_not_ignore.chat_complete(messages,
+                                            model="gpt-5-nano",
+                                            temperature=1.0,
+                                            return_str=True, use_cache=True))
+    print(chat_llm_ignore.chat_complete(messages,
+                                        model="gpt-5-nano",
+                                        temperature=0.87,
+                                        return_str=True, use_cache=True))
+
 if __name__ == '__main__':
     # check the configuration
     print(myllmutils.about())
@@ -107,4 +121,5 @@ if __name__ == '__main__':
     # example_sampling()
     # example_deepseek()
     # example_cache()
-    example_parallel()
+    # example_parallel()
+    example_ignore_cache_params()

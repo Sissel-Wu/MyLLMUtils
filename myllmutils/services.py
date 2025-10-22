@@ -126,7 +126,8 @@ class LLMService:
                  output_dir: str | None = None,
                  timeout: float | openai.Timeout | None | openai.NotGiven = openai.not_given,
                  disable_ssl_verify: bool = False,
-                 parallels: int = 1):
+                 parallels: int = 1,
+                 ignore_cache_params: list[str] | None = None):
         """
         Initialize the LLM service.
         :param base_url: If None, the env variable "MYLLM_URL" is used.
@@ -148,7 +149,7 @@ class LLMService:
             api_key = environ.get("OPENAI_API_KEY")
 
         self.output_dir = output_dir
-        self.cache_helper = CacheHelper(self.output_dir)
+        self.cache_helper = CacheHelper(self.output_dir, ignore_cache_params)
 
         self._clients = LLMClientPool(pool_size=parallels,
                                       base_url=base_url,
@@ -228,7 +229,7 @@ class LLMService:
         params = {"model": model, "temperature": temperature, "n": n, **kwargs}
         query = messages.to_openai_form()
         if use_cache:
-            print("Searching for cached response...")
+            print(f"Searching for cached response ({query}) ({params})...")
             response_helper = self.cache_helper.get_by_query(query, params)
             if response_helper is None:
                 print("Not in cache.")

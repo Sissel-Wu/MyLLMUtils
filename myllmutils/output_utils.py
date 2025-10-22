@@ -77,26 +77,30 @@ def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params
         return q, r, ps
 
 
-def _to_key(query: Query, params: dict[str, Any] | None):
-    key = (tuple((m["role"], m["content"]) for m in query), tuple(sorted(params.items())) if params else None)
+def _to_key(query: Query, params: dict[str, Any] | None, ignore_params: list[str]):
+    ignore_params = ignore_params or []
+    key = (tuple((m["role"], m["content"]) for m in query),
+           tuple(sorted([(_k, _v) for _k, _v in params.items() if _k not in ignore_params])) if params else None)
     return key
 
 
 class _QueryCache:
-    def __init__(self):
+    def __init__(self, ignore_params: list[str]):
         self._map = {}
+        self.ignore_params = ignore_params or []
 
     def add(self, query: Query, response: ResponseHelper, params: dict[str, Any] | None):
-        self._map[_to_key(query, params)] = response
+        self._map[_to_key(query, params, self.ignore_params)] = response
 
     def get(self, query: Query, params: dict[str, Any] | None) -> ResponseHelper | None:
-        return self._map.get(_to_key(query, params), None)
+        return self._map.get(_to_key(query, params, self.ignore_params), None)
 
 
 class CacheHelper:
-    def __init__(self, dir_path: str | Path):
+    def __init__(self, dir_path: str | Path, ignore_cache_params: list[str] | None = None):
         self.dir = Path(dir_path) if isinstance(dir_path, str) else dir_path
         self.map = None
+        self.ignore_cache_params = ignore_cache_params or []
 
     def get(self, name: str) -> (Query, ResponseHelper, Params):
         """
@@ -116,7 +120,7 @@ class CacheHelper:
         """
         if self.map is not None:
             return self.map
-        self.map = _QueryCache()
+        self.map = _QueryCache(self.ignore_cache_params)
         raw_dir = self.dir / "raw"
         if not raw_dir.exists():  # empty cache
             return self.map
