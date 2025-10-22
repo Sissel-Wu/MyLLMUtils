@@ -121,5 +121,5 @@ if __name__ == '__main__':
     # example_sampling()
     # example_deepseek()
     # example_cache()
-    # example_parallel()
+    example_parallel()
     example_ignore_cache_params()

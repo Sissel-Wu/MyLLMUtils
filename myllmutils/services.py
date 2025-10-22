@@ -196,7 +196,8 @@ class LLMService:
             response = client.chat.completions.create(messages=messages.to_openai_form(),
                                                       model=model,
                                                       temperature=temperature,
-                                                      n=n_per_query)
+                                                      n=n_per_query,
+                                                      **kwargs)
         finally:
             client_pool.release(client)
         return response
