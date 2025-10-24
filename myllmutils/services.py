@@ -190,7 +190,12 @@ class LLMService:
         
     
     @staticmethod
-    def _send_chat_complete(client_pool: LLMClientPool, n_per_query: int, messages: Messages, model: str, temperature: float | None | openai.NotGiven = openai.NOT_GIVEN, **kwargs) -> openai.types.chat.ChatCompletion:
+    def _send_chat_complete(client_pool: LLMClientPool,
+                            n_per_query: int,
+                            messages: Messages,
+                            model: str,
+                            temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                            **kwargs) -> openai.types.chat.ChatCompletion:
         client = client_pool.acquire()
         try:
             response = client.chat.completions.create(messages=messages.to_openai_form(),
@@ -202,6 +207,61 @@ class LLMService:
             client_pool.release(client)
         return response
 
+
+    @staticmethod
+    def _send_complete(client_pool: LLMClientPool,
+                       n_per_query: int,
+                       prompt: str,
+                       model: str,
+                       temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                       **kwargs) -> openai.types.Completion:
+        client = client_pool.acquire()
+        try:
+            response = client.completions.create(prompt=prompt,
+                                                 model=model,
+                                                 temperature=temperature,
+                                                 n=n_per_query,
+                                                 **kwargs)
+        finally:
+            client_pool.release(client)
+        return response
+
+    def _search_cache(self, query, params) -> ResponseHelper | None:
+        print(f"Searching for cached response ({query}) ({params})...")
+        response_helper = self.cache_helper.get_by_query(query, params)
+        if response_helper is None:
+            print("Not in cache.")
+            return None
+        else:
+            print("Hit.")
+            return response_helper
+
+    def _batch_send(self,
+                    func,
+                    n, n_limit_per_query,
+                    messages_or_prompt,
+                    model,
+                    temperature,
+                    **kwargs) -> ResponseHelper:
+        n_per_time = min(n, n_limit_per_query) if n_limit_per_query > 0 else n
+        futures = []
+        responses = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallels) as executor:
+            while n > 0:
+                n_sent = min(n, n_per_time)
+                future = executor.submit(func,
+                                         self._clients,
+                                         n_sent,
+                                         messages_or_prompt,
+                                         model,
+                                         temperature,
+                                         **kwargs)
+                futures.append(future)
+                n -= n_sent
+            for future in concurrent.futures.as_completed(futures):
+                response = future.result()
+                responses.append(response)
+        return ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
 
     def chat_complete(self,
                       messages: Messages,
@@ -229,39 +289,15 @@ class LLMService:
         """
         params = {"model": model, "temperature": temperature, "n": n, **kwargs}
         query = messages.to_openai_form()
-        if use_cache:
-            print(f"Searching for cached response ({query}) ({params})...")
-            response_helper = self.cache_helper.get_by_query(query, params)
-            if response_helper is None:
-                print("Not in cache.")
-            else:
-                print("Hit.")
-                if return_str:
-                    return response_helper.content()
-                else:
-                    return response_helper
 
-        # send the request in batches
-        n_per_time = min(n, n_limit_per_query) if n_limit_per_query > 0 else n
-        responses = []
-        futures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallels) as executor:
-            while n > 0:
-                n_sent = min(n, n_per_time)
-                future = executor.submit(self._send_chat_complete,
-                                         self._clients,
-                                         n_sent,
-                                         messages,
-                                         model,
-                                         temperature,
-                                         **kwargs)
-                futures.append(future)
-                n -= n_sent
-            for future in concurrent.futures.as_completed(futures):
-                response = future.result()
-                responses.append(response)
-            
-        rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
+        resp_helper = self._search_cache(query, params) if use_cache else None
+        if resp_helper and return_str:
+            return resp_helper.content()
+        elif resp_helper:
+            return resp_helper
+
+        # send the request in batch
+        rh_obj = self._batch_send(self._send_chat_complete, n, n_limit_per_query, messages, model, temperature, **kwargs)
         if use_cache:
             self.cache_helper.add(query, rh_obj, params)
         return self._process_response(messages, params, rh_obj, title, return_str)
@@ -275,40 +311,22 @@ class LLMService:
                  n: int = 1,
                  n_limit_per_query: int = 0,
                  **kwargs) -> str | list[str] | ResponseHelper:
-        params = {"api": "complete", "model": model, "temperature": temperature, "n": n,
-                  "n_limit_per_query": n_limit_per_query, **kwargs}
+        params = {"api": "complete",
+                  "model": model,
+                  "temperature": temperature,
+                  "n": n,
+                  **kwargs}
         messages = CompletionMessages(prompt)
-        if use_cache:
-            print("Searching for cached response...")
-            query = messages.to_openai_form()
-            response_helper = self.cache_helper.get_by_query(query, params)
-            if response_helper is None:
-                print("Not in cache.")
-            else:
-                print("Hit.")
-                if return_str:
-                    return response_helper.content()
-                else:
-                    return response_helper
+        query = messages.to_openai_form()
 
-            # send the request in batches
-        n_per_time = min(n, n_limit_per_query) if n_limit_per_query > 0 else n
-        responses = []
-        while n > 0:
-            n_sent = min(n, n_per_time)
-            # TODO parallels
-            client = self._clients.acquire()
-            try:
-                response = self._clients[0].completions.create(prompt=prompt,
-                                                       model=model,
-                                                       temperature=temperature,
-                                                       n=n_sent,
-                                                       **kwargs)
-            finally:
-                self._clients.release(client)
-            responses.append(response)
-            n -= n_per_time
-        rh_obj = ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
+        resp_helper = self._search_cache(query, params) if use_cache else None
+        if resp_helper and return_str:
+            return resp_helper.content()
+        elif resp_helper:
+            return resp_helper
+
+        # send the request in batch
+        rh_obj = self._batch_send(self._send_complete, n, n_limit_per_query, prompt, model, temperature, **kwargs)
         if use_cache:
             self.cache_helper.add(query, rh_obj, params)
         return self._process_response(messages, params, rh_obj, title, return_str)

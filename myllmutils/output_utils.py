@@ -79,7 +79,7 @@ def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params
 
 def _to_key(query: Query, params: dict[str, Any] | None, ignore_params: list[str]):
     ignore_params = ignore_params or []
-    key = (tuple((m["role"], m["content"]) for m in query),
+    key = (tuple(tuple(sorted([(_k, _v) for _k, _v in _dic.items()])) for _dic in query),
            tuple(sorted([(_k, _v) for _k, _v in params.items() if _k not in ignore_params])) if params else None)
     return key
 
