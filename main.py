@@ -89,7 +89,7 @@ def example_cache():
 def example_parallel():
     chat_llm = LLMService(output_dir="llm_output", parallels=2)
     messages = ZeroShotMessages(user_query="How are you doing?")
-    print(chat_llm.chat_complete(messages, 
+    print(chat_llm.chat_complete(messages,
                                  model="gpt-5-nano",
                                  temperature=1.0,
                                  title="parallel",
@@ -97,6 +97,19 @@ def example_parallel():
                                  n=5,
                                  use_cache=True,
                                  n_limit_per_query=2))
+
+def example_parallel_multiple():
+    chat_llm = LLMService(output_dir="llm_output", parallels=3)
+    messages1 = ZeroShotMessages(user_query="How are you doing?")
+    messages2 = ZeroShotMessages(user_query="Hi, how should I call you?")
+    responses = chat_llm.chat_complete_batch([messages1, messages2],
+                                             model="gpt-5-nano",
+                                             return_str=True,
+                                             n=2,
+                                             n_limit_per_query=1,
+                                             use_cache=True)
+    for resp in responses:
+        print(resp)
 
 def example_ignore_cache_params():
     # A few-shot chat with an LLM
@@ -123,5 +136,6 @@ if __name__ == '__main__':
     # example_sampling()
     # example_deepseek()
     # example_cache()
-    example_parallel() # TODO test parallel with completion
+    # example_parallel() # TODO test parallel with completion
+    example_parallel_multiple()
     # example_ignore_cache_params()

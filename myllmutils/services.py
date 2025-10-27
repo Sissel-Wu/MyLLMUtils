@@ -194,7 +194,7 @@ class LLMService:
                             n_per_query: int,
                             messages: Messages,
                             model: str,
-                            temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                            temperature: float = 1.0,
                             **kwargs) -> openai.types.chat.ChatCompletion:
         client = client_pool.acquire()
         try:
@@ -213,7 +213,7 @@ class LLMService:
                        n_per_query: int,
                        prompt: str,
                        model: str,
-                       temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                       temperature: float = 1.0,
                        **kwargs) -> openai.types.Completion:
         client = client_pool.acquire()
         try:
@@ -263,10 +263,37 @@ class LLMService:
                 responses.append(response)
         return ResponseHelper([json.loads(resp.model_dump_json()) for resp in responses])
 
+
+    def _batch_send_multiple(self,
+                             func,
+                             n, n_limit_per_query,
+                             list_content,
+                             model,
+                             temperature,
+                             **kwargs):
+        futures = []
+        list_outputs = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallels) as executor:  # TODO the nested multi-threading is OK but can be optimized (at least the number of threads)
+            for content in list_content:
+                future = executor.submit(self._batch_send,
+                                         func,
+                                         n,
+                                         n_limit_per_query,
+                                         content,
+                                         model,
+                                         temperature,
+                                         **kwargs)
+                futures.append(future)
+            for future in concurrent.futures.as_completed(futures):
+                output = future.result()
+                list_outputs.append(output)
+        return list_outputs
+
+
     def chat_complete(self,
                       messages: Messages,
                       model: str,
-                      temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                      temperature: float = 1.0,
                       return_str: bool = True,
                       title: str | None = None,
                       use_cache: bool = False,
@@ -297,14 +324,57 @@ class LLMService:
             return resp_helper
 
         # send the request in batch
-        rh_obj = self._batch_send(self._send_chat_complete, n, n_limit_per_query, messages, model, temperature, **kwargs)
+        rh_obj = self._batch_send(self._send_chat_complete,
+                                  n, n_limit_per_query, messages, model, temperature, **kwargs)
         if use_cache:
             self.cache_helper.add(query, rh_obj, params)
         return self._process_response(messages, params, rh_obj, title, return_str)
 
+
+    def chat_complete_batch(self,
+                            messages_list: list[Messages],
+                            model: str,
+                            temperature: float = 1.0,
+                            return_str: bool = True,
+                            use_cache: bool = False,
+                            n: int = 1,
+                            n_limit_per_query: int = 0,
+                            **kwargs) -> list[str] | list[list[str]] | list[ResponseHelper]:
+        """
+        Process a batch of chat completions.
+        """
+        awaits = []
+        done = []
+        for i, messages in enumerate(messages_list):
+            params = {"model": model, "temperature": temperature, "n": n, **kwargs}
+            query = messages.to_openai_form()
+            resp_helper = self._search_cache(query, params) if use_cache else None
+            if resp_helper:
+                done.append((i, resp_helper))
+            else:
+                awaits.append(messages)
+
+        rh_objs = self._batch_send_multiple(self._send_chat_complete,
+                                            n, n_limit_per_query, awaits, model, temperature, **kwargs)
+
+        for messages, rh_obj in zip(awaits, rh_objs):
+            params = {"model": model, "temperature": temperature, "n": n, **kwargs}
+            query = messages.to_openai_form()
+            if use_cache:
+                self.cache_helper.add(query, rh_obj, params)
+            self._process_response(messages, params, rh_obj, None, return_str)
+
+        for i, rh_obj in done:
+            rh_objs.insert(i, rh_obj)
+
+        if return_str:
+            return [rh_obj.content() for rh_obj in rh_objs]
+        return rh_objs
+
+
     def complete(self, prompt: str,
                  model: str,
-                 temperature: float | None | openai.NotGiven = openai.NOT_GIVEN,
+                 temperature: float = 1.0,
                  return_str: bool = True,
                  title: str | None = None,
                  use_cache: bool = False,
