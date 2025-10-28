@@ -1,6 +1,6 @@
 import myllmutils
 from myllmutils import LLMService, ZeroShotMessages, FewShotMessages
-from myllmutils import ResponseHelper
+from myllmutils import prepare_offline_inference, volcano_template
 
 
 def example_zeroshot():
@@ -125,6 +125,14 @@ def example_ignore_cache_params():
                                         temperature=0.87,
                                         return_str=True, use_cache=True))
 
+def example_offline():
+    messages1 = ZeroShotMessages(user_query="9 * 8 = ?")
+    messages2 = ZeroShotMessages(user_query="1000 - 7 = ?")
+    prepare_offline_inference("temp/vol_offline.jsonl",
+                              volcano_template.copy(),
+                              [messages1, messages2],
+                              n=2)
+
 if __name__ == '__main__':
     # check the configuration
     print(myllmutils.about())
@@ -137,5 +145,6 @@ if __name__ == '__main__':
     # example_deepseek()
     # example_cache()
     # example_parallel() # TODO test parallel with completion
-    example_parallel_multiple()
+    # example_parallel_multiple()
     # example_ignore_cache_params()
+    example_offline()

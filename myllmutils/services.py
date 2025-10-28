@@ -495,3 +495,49 @@ class LLMService:
         if return_str:
             return resp_helper.content()
         return resp_helper
+
+volcano_template = {
+    "custom_id": "",
+    "body": {}
+}
+
+
+def _default_naming(model: str, messages: Messages, msg_index: int, sample_index: int) -> str:
+    if model:
+        return f"request-{model}-{msg_index}-{sample_index}"
+    else:
+        return f"request-{msg_index}-{sample_index}"
+
+
+def prepare_offline_inference(output_file_path: str,
+                              template_dic: dict[str, object],
+                              messages_list: list[Messages],
+                              model: str | None = None,
+                              n: int = 1,
+                              naming_func: callable = _default_naming,
+                              **kwargs):
+    """
+    Prepare the offline inference file for the given messages list.
+    :param output_file_path: The output jsonl path.
+    :param template_dic: The template dictionary for each entry.
+    :param messages_list: The list of messages.
+    :param model: The model name. Can be None if the API does not require a model.
+    :param n: Number of samples to obtain for each message. The output file contains n * len(messages_list) entries.
+    :param naming_func: A function to generate the custom_id for each entry. The function takes (model, messages, msg_index, sample_index) as input and returns a string.
+    :param kwargs: Other parameters for the chat completion API.
+    """
+    lines = []
+    for msg_i, messages in enumerate(messages_list):
+        for i in range(n):
+            entry = template_dic.copy()
+            entry["custom_id"] = naming_func(model, messages, msg_i, i)
+            body = {
+                "messages": messages.to_openai_form(),
+                **kwargs
+            }
+            if model:
+                body["model"] = model
+            entry["body"] = body
+            lines.append(json.dumps(entry))
+    with open(output_file_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
