@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "myllmutils"
-version = "0.2.8"
+version = "0.3.0"
 description = "A lightweight library to ease LLM query and storage"
 authors = ["Sissel-Wu <sissel126@gmail.com>"]
 readme = "README.md"
@@ -10,6 +10,7 @@ python = "^3.10"
 openai = "^2.1"
 tiktoken = "^0.11"
 httpx = { version = "0.25.2", extras = ["socks"] }
+pyyaml = "^6.0.3"
 
 [build-system]
 requires = ["poetry-core"]

@@ -1,0 +1,12 @@
+# basic info
+base_url: https://api.siliconflow.cn/v1
+api_key: env::SF_API_KEY
+# platform-specific args
+model: deepseek-ai/DeepSeek-V3.1-Terminus
+max_tokens: 100
+enable_thinking: true
+thinking_budget: 200
+top_k: 50
+# general args
+top_p: 0.8
+temperature: 1.0
