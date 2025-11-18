@@ -159,9 +159,9 @@ def _process_streamed_response(response: requests.Response) -> Dict[str, Any]:
                         logging.warning("Failed to decode JSON chunk: %s", data_str)
                         continue
 
-    except Exception as e:
-        logging.error("Error while processing stream: %s", e)
-        # We might have partial content, so we'll return what we got.
+    except Exception:
+        logging.exception("Error while processing stream")
+        raise
 
     # --- Assemble the final response object ---
 
@@ -321,11 +321,13 @@ def process_single_query(
 
     while retries < args.max_retries:
         try:
+            verify = not args.no_verify
             response = requests.post(
                 f"{base_url}/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=args.timeout,
+                verify=verify,
                 stream=args.stream  # Enable streaming for the requests call
             )
 
@@ -534,6 +536,11 @@ def main():
         action="store_true",
         help="Enable streaming mode. The script will still save the *assembled* "
              "full response (including tool calls) to maintain resumability."
+    )
+    parser.add_argument(
+        "--no_verify",
+        action="store_true",
+        help="Disable SSL verification. Useful for self-signed certificates."
     )
     parser.add_argument(
         "--mask_input_fields",
