@@ -1,11 +1,11 @@
 """
 A standalone, multi-threaded, resumable batch processor for LLM APIs.
 
-This script reads queries from a JSONL file, sends them to an LLM API
-concurrently, and saves the results to an output JSONL file.
+This script reads queries from one or more JSONL file, sends them to an LLM API
+concurrently, and saves the results to the corresponding output JSONL files.
 
 It supports:
-- Resuming progress (skips queries already in the output file)
+- Resuming progress (skips queries already in the output files)
 - Multi-threading for concurrent API calls
 - Error handling with exponential backoff for server-side errors
 - Caching results as they are completed
@@ -25,14 +25,23 @@ Output JSONL Format:
 Each line is a JSON object containing the original "custom_id" and the
 "response" from the API.
 Example:
-{"custom_id": "req-1", "response": {"id": "...", "choices": [...], ...}}
-{"custom_id": "req-2", "response": {"id": "...", "choices": [...], ...}}
+{"custom_id": "req-1", "response": {"id": "...", "choices": [...], ...}, "query": {...}}
+{"custom_id": "req-2", "response": {"id": "...", "choices": [...], ...}, "query": {...}}
 
 Usage:
 python batch_processor.py \
     --input_file queries.jsonl \
     --output_file results.jsonl \
-    --api_url "https://api.openai.com/v1/chat/completions" \
+    --api_config model_config.json \
+    --api_key "YOUR_API_KEY" \
+    --max_workers 16 \
+    --stream
+
+OR
+
+python batch_processor.py \
+    --io mapping.json \
+    --api_config model_config.yaml \
     --api_key "YOUR_API_KEY" \
     --max_workers 16 \
     --stream
@@ -268,12 +277,35 @@ def load_api_config(file_path: str) -> Dict[str, Any]:
             try:
                 import yaml  # Local import to avoid dependency if not used
             except ImportError:
-                logging.error("PyYAML is not installed. Please install it to use YAML config files.")
+                logging.error("PyYAML is not installed. Please install it to use YAML config files, or use json instead.")
                 raise Exception("PyYAML is not installed.")
             return yaml.safe_load(f)
         else:
             logging.error("Unsupported config file format: %s", file_path)
             raise Exception("Unsupported config file format. Use .json or .yaml/.yml")
+
+
+def load_io_mapping(file_path: str) -> Dict[str, Any]:
+    """
+    Loads input-output mapping from a JSON or YAML file.
+    """
+    if not os.path.exists(file_path):
+        logging.error("IO mapping file not found: %s", file_path)
+        raise FileNotFoundError(f"IO mapping file not found: {file_path}")
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        if file_path.endswith('.json'):
+            return json.load(f)
+        elif file_path.endswith(('.yml', '.yaml')):
+            try:
+                import yaml
+            except ImportError:
+                logging.error("PyYAML is not installed. Please install it to use YAML config files, or use json instead.")
+                raise Exception("PyYAML is not installed.")
+            return yaml.safe_load(f)
+        else:
+            logging.error("Unsupported IO mapping file format: %s", file_path)
+            raise Exception("Unsupported IO mapping file format. Use .json or .yaml/.yml")
 
 
 def process_single_query(
@@ -425,7 +457,7 @@ def process_single_query(
 
 # --- Main Processing Logic ---
 
-def load_processed_ids(output_file: str) -> Set[str]:
+def load_processed_ids(output_file: str) -> Set[tuple[str, str]]:
     """
     Reads the output file to find which custom_ids have already been processed.
     """
@@ -440,7 +472,7 @@ def load_processed_ids(output_file: str) -> Set[str]:
                 try:
                     data = json.loads(line)
                     if 'custom_id' in data:
-                        processed_ids.add(data['custom_id'])
+                        processed_ids.add((output_file, data['custom_id']))
                 except json.JSONDecodeError:
                     logging.warning("Skipping corrupted line in output file: %s", line)
     except Exception as e:
@@ -451,7 +483,7 @@ def load_processed_ids(output_file: str) -> Set[str]:
     return processed_ids
 
 
-def load_tasks(input_file: str, processed_ids: Set[str]) -> list:
+def load_tasks(input_file: str, output_file: str, processed_ids: Set[tuple[str, str]]) -> list:
     """
     Loads all tasks from the input file, skipping those already processed.
     """
@@ -464,11 +496,11 @@ def load_tasks(input_file: str, processed_ids: Set[str]) -> list:
                     task_data = json.loads(line)
                     custom_id = task_data.get('custom_id')
                     if not custom_id:
-                        logging.warning("Task on line %d missing 'custom_id'. Skipping.", i + 1)
+                        logging.warning(f"Task on {input_file} line {i+1} missing 'custom_id'. Skipping.")
                         continue
-                    if custom_id in processed_ids:
+                    if (output_file, custom_id) in processed_ids:
                         continue  # Skip already processed task
-                    tasks_to_process.append(task_data)
+                    tasks_to_process.append((output_file, task_data))
                 except json.JSONDecodeError:
                     logging.warning("Skipping corrupted line in input file: %s", line)
     except FileNotFoundError:
@@ -497,27 +529,33 @@ def main():
     parser.add_argument(
         "--input_file",
         type=str,
-        required=True,
+        default=None,
         help="Path to the input JSONL file."
     )
     parser.add_argument(
         "--output_file",
         type=str,
-        required=True,
+        default=None,
         help="Path to the output JSONL file (for results and caching)."
+    )
+    parser.add_argument(
+        "--io",
+        type=str,
+        default=None,
+        help="Path to a json/yaml file in which each key-value pair specifies an input-output pair."
     )
     parser.add_argument(
         "--api_config",
         type=str,
-        default=None,
+        required=True,
         help="File path to the api config file (json or yaml) including base_url, api_key, model, "
              "and api params, e.g., temperature, top_p, and platform-specific args, e.g., thinking_budget (siliconflow)."
     )
     parser.add_argument(
         "--max_workers",
         type=int,
-        default=16,
-        help="Number of concurrent processing threads (default: 16)."
+        default=1,
+        help="Number of concurrent processing threads (default: 1)."
     )
     parser.add_argument(
         "--max_retries",
@@ -558,11 +596,24 @@ def main():
 
     # --- Start Processing ---
 
+    # 0. Handle input-output mappings
     # 1. Find tasks that are already done
-    processed_ids = load_processed_ids(args.output_file)
-
     # 2. Load new tasks to process
-    tasks = load_tasks(args.input_file, processed_ids)
+    io_mapping_file = args.io
+    if not io_mapping_file:
+        if not args.output_file or not args.input_file:
+            logging.error("Must specify either --io or --input_file and --output_file.")
+            sys.exit(1)
+        processed_ids = load_processed_ids(args.output_file)
+        tasks = load_tasks(args.input_file, args.output_file, processed_ids)
+    else:
+        io_mapping = load_io_mapping(io_mapping_file)
+        processed_ids = set()
+        tasks = []
+        for input_file, output_file in io_mapping.items():
+            curr_processed = load_processed_ids(output_file)
+            tasks.extend(load_tasks(input_file, output_file, curr_processed))
+            processed_ids.update(curr_processed)
 
     if not tasks:
         logging.info("No new tasks to process. Exiting.")
@@ -576,52 +627,57 @@ def main():
     tasks_completed = 0
     total_tasks = len(tasks)
 
-    # We open the output file in 'append' mode. This is safe for
-    # multiple threads *as long as* we only write from the main thread.
-    # The `as_completed` iterator allows us to do this.
     try:
-        with open(args.output_file, 'a', encoding='utf-8') as f_out:
-            with ThreadPoolExecutor(
-                    max_workers=args.max_workers,
-                    thread_name_prefix="Processor"
-            ) as executor:
-                # Submit all tasks to the pool
-                future_to_task = {
-                    executor.submit(
-                        process_single_query,
-                        task,
-                        args
-                    ): task
-                    for task in tasks
-                }
+        with ThreadPoolExecutor(
+                max_workers=args.max_workers,
+                thread_name_prefix="Processor"
+        ) as executor:
+            # Submit all tasks to the pool
+            future_to_task = {
+                executor.submit(
+                    process_single_query,
+                    task,
+                    args
+                ): (output_file, task)
+                for output_file, task in tasks
+            }
 
-                logging.info(
-                    "Submitted %d tasks to %d workers.", total_tasks, args.max_workers
-                )
+            logging.info(
+                "Submitted %d tasks to %d workers.", total_tasks, args.max_workers
+            )
 
-                # Process results as they come in
-                for future in as_completed(future_to_task):
-                    task = future_to_task[future]
-                    custom_id = task.get("custom_id", "UNKNOWN")
+            # Process results as they come in
+            # We open the output file in 'append' mode. This is safe for
+            # multiple threads *as long as* we only write from the main thread.
+            # The `as_completed` iterator allows us to do this.
+            for future in as_completed(future_to_task):
+                output_file, task = future_to_task[future]
+                custom_id = task.get("custom_id", "UNKNOWN")
 
-                    try:
-                        result = future.result()
-                        # If result is not None, it was successful
-                        if result:
-                            # Write the successful result to the file
+                try:
+                    result = future.result()
+                    # If result is not None, it was successful
+                    if result:
+                        # Ensure output directory exists
+                        dirpath = os.path.dirname(output_file)
+                        if dirpath:
+                            os.makedirs(dirpath, exist_ok=True)
+
+                        # Open the target output file per-result (append)
+                        with open(output_file, 'a', encoding='utf-8') as f_out:
                             json.dump(result, f_out)
                             f_out.write('\n')
                             f_out.flush()  # Ensure it's written immediately
-                            tasks_completed += 1
-                    except Exception as e:
-                        # Handle unexpected errors from the worker function itself
-                        logging.error(
-                            "Error processing task %s: %s", custom_id, e
-                        )
-                    logging.info(
-                        "Progress: %d / %d tasks completed.",
-                        tasks_completed, total_tasks
+                        tasks_completed += 1
+                except Exception as e:
+                    # Handle unexpected errors from the worker function itself
+                    logging.error(
+                        "Error processing task %s: %s", custom_id, e
                     )
+                logging.info(
+                    "Progress: %d / %d tasks completed.",
+                    tasks_completed, total_tasks
+                )
     except Exception as e:
         logging.critical("A fatal error occurred: %s", e)
         # If the file-writing or thread pool fails, we stop.

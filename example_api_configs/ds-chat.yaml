@@ -1,0 +1,4 @@
+base_url: https://api.deepseek.com
+api_key: env::DS_API_KEY
+model: deepseek-chat
+max_tokens: 100
