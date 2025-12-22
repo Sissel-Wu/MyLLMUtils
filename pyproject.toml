@@ -8,7 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 openai = "^2.1"
-tiktoken = "^0.11"
+tiktoken = "^0.12"
 httpx = { version = "0.25.2", extras = ["socks"] }
 pyyaml = "^6.0.3"
 
