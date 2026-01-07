@@ -1,5 +1,5 @@
 import myllmutils
-from myllmutils import LLMService, ZeroShotMessages, FewShotMessages
+from myllmutils import LLMService, ZeroShotMessages, FewShotMessages, ZeroShotVLMessages
 from myllmutils import prepare_offline_inference, volcano_template
 
 
@@ -133,6 +133,15 @@ def example_offline():
                               [messages1, messages2],
                               n=2)
 
+def example_vl():
+    user_query = [
+        {"type": "text", "text": "Describe the image."},
+        {"type": "image_url", "image_url": {"url": "https://pet-health-content-media.chewy.com/wp-content/uploads/2025/04/16185711/202503bec-201610how-to-slow-down-dog-eating-1024x615.jpg"}}
+    ]
+    messages1 = ZeroShotVLMessages(user_query=user_query)
+    chat_llm = LLMService(output_dir="llm_output")
+    print(chat_llm.chat_complete(messages1,"gpt-5-nano", return_str=True, use_cache=True))
+
 if __name__ == '__main__':
     # check the configuration
     print(myllmutils.about())
@@ -146,5 +155,6 @@ if __name__ == '__main__':
     # example_cache()
     # example_parallel() # TODO test parallel with completion
     # example_parallel_multiple()
-    # example_ignore_cache_params()
-    example_offline()
+    example_ignore_cache_params()
+    # example_offline()
+    example_vl()

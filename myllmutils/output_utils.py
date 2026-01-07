@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-Query = list[dict[str, str]]
+Query = list[dict[str, Any]]
 Params = dict[str, Any]
 
 
@@ -79,8 +79,17 @@ def load_from_json_file(file_path: str | Path) -> (Query, ResponseHelper, Params
 
 def _to_key(query: Query, params: dict[str, Any] | None, ignore_params: list[str]):
     ignore_params = ignore_params or []
-    key = (tuple(tuple(sorted([(_k, _v) for _k, _v in _dic.items()])) for _dic in query),
-           tuple(sorted([(_k, _v) for _k, _v in params.items() if _k not in ignore_params])) if params else None)
+
+    def _handle_val(_v):
+        if isinstance(_v, list):
+            return tuple(sorted([_handle_val(elem) for elem in _v]))
+        elif isinstance(_v, dict):
+            return tuple(sorted([(_k, _handle_val(_vv)) for _k, _vv in _v.items()]))
+        else:
+            return _v
+
+    key = (_handle_val(query),
+           _handle_val([(_k, _v) for _k, _v in params.items() if _k not in ignore_params]) if params else None)
     return key
 
 

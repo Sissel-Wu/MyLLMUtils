@@ -22,7 +22,7 @@ class Messages(ABC):
     """
 
     @abstractmethod
-    def to_openai_form(self) -> list[dict[str, str]]:
+    def to_openai_form(self) -> list[dict[str, Any]]:
         """
         Convert the messages to the form that OpenAI's chat API expects.
         :return: A list of {"role": "system" | "assistant" | "user", "content": "xxx"}
@@ -60,6 +60,29 @@ class ZeroShotMessages(Messages):
 
     def __str__(self):
         return f"===System===\n{self.system_message}\n\n===User===\n{self.user_query}"
+
+
+class ZeroShotVLMessages(Messages):
+    """
+    Messages for zero-shot vision-language chat completion, in the form of
+    [{"role": "system", "content": system_message}, {"role": "user", "content": [
+      {"type": "image_url", "image_url": {"url": "xxx"}}, {"type": "text", "text": "xxx"}
+    ]}]
+    """
+    def __init__(self, user_query: str | list[dict[str, Any]], system_message: str | None = None):
+        self.system_message = system_message
+        self.user_query = user_query
+
+    def to_openai_form(self) -> list[dict[str, Any]]:
+        rst = []
+        if self.system_message is not None:
+            rst.append({"role": "system", "content": self.system_message})
+        rst.append({"role": "user", "content": self.user_query})
+        return rst
+
+    def __str__(self):
+        flatten_user_query = [x["text"] if x["type"] == "text" else x[x["type"]] for x in self.user_query]
+        return f"===System===\n{self.system_message}\n\n===User===\n{flatten_user_query}"
 
 
 class FewShotMessages(Messages):
