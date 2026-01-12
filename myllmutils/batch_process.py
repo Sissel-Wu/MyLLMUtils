@@ -218,6 +218,29 @@ def _process_streamed_response(response: requests.Response) -> Dict[str, Any]:
     }
 
 
+def _replace_local_url(messages):
+    import base64
+    from io import BytesIO
+    from PIL import Image
+
+    def encode_pil_image(pil_image):
+        buffered = BytesIO()
+        pil_image.save(buffered, format='PNG')
+        return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    res = messages.copy()
+    for msg in res:
+        if "content" in msg:
+            for item in msg["content"]:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    url = item["image_url"]["url"]
+                    if not url.startswith("http") and not url.startswith("data"):
+                        # Replace local file path with a placeholder URL
+                        base64_encoded = encode_pil_image(Image.open(url))
+                        item["image_url"]["url"] = f"data:image/png;base64,{base64_encoded}"
+    return res
+
+
 def build_payload(task_data: Dict[str, Any],
                   api_config: Dict[str, Any],
                   mask_input_fields: str
@@ -236,6 +259,7 @@ def build_payload(task_data: Dict[str, Any],
 
     assert isinstance(payload, dict), "The 'body' field must be a JSON object."
     assert "messages" in payload, "The 'body' must contain a 'messages' field."
+    payload["messages"] = _replace_local_url(payload["messages"])
 
     mask_input_fields = mask_input_fields.split(";")
     for field in mask_input_fields:
@@ -308,6 +332,18 @@ def load_io_mapping(file_path: str) -> Dict[str, Any]:
             raise Exception("Unsupported IO mapping file format. Use .json or .yaml/.yml")
 
 
+def simplify_images(payload):
+    res = payload.copy()
+    for msg in res["messages"]:
+        if "content" in msg:
+            for item in msg["content"]:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    url = item["image_url"]["url"]
+                    if url.startswith("data:image/"):
+                        item["image_url"]["url"] = item["image_url"]["url"][:40]
+    return res
+
+
 def process_single_query(
         task_data: Dict[str, Any],
         args: argparse.Namespace
@@ -369,11 +405,11 @@ def process_single_query(
             if response.status_code == 200:
                 if not args.stream:
                     # Non-streaming: just return the JSON body
-                    return {"custom_id": custom_id, "response": response.json(), "query": payload}
+                    return {"custom_id": custom_id, "response": response.json(), "query": simplify_images(payload)}
                 else:
                     # Streaming: process the stream and assemble the full response
                     assembled_response = _process_streamed_response(response)
-                    return {"custom_id": custom_id, "response": assembled_response, "query": payload}
+                    return {"custom_id": custom_id, "response": assembled_response, "query": simplify_images(payload)}
 
             # 4xx Client Errors: Bad request, auth error, etc.
             # These are unlikely to succeed on retry.
