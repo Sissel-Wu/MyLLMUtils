@@ -261,7 +261,7 @@ def build_payload(task_data: Dict[str, Any],
     assert "messages" in payload, "The 'body' must contain a 'messages' field."
     payload["messages"] = _replace_local_url(payload["messages"])
 
-    mask_input_fields = mask_input_fields.split(";")
+    mask_input_fields = mask_input_fields.split(",")
     for field in mask_input_fields:
         field = field.strip()
         if field and field in payload:
@@ -519,10 +519,19 @@ def load_processed_ids(output_file: str) -> Set[tuple[str, str]]:
     return processed_ids
 
 
-def load_tasks(input_file: str, output_file: str, processed_ids: Set[tuple[str, str]]) -> list:
+def load_tasks(input_file: str, output_file: str, processed_ids: Set[tuple[str, str]], mask_ids: str) -> list:
     """
     Loads all tasks from the input file, skipping those already processed.
     """
+
+    mask_patterns = mask_ids.split(',')
+    def match_masked_id(cid: str) -> bool:
+        from fnmatch import fnmatch
+        for pattern in mask_patterns:
+            if fnmatch(cid, pattern):
+                return True
+        return False
+
     tasks_to_process = []
     logging.info("Loading tasks from %s...", input_file)
     try:
@@ -533,6 +542,9 @@ def load_tasks(input_file: str, output_file: str, processed_ids: Set[tuple[str, 
                     custom_id = task_data.get('custom_id')
                     if not custom_id:
                         logging.warning(f"Task on {input_file} line {i+1} missing 'custom_id'. Skipping.")
+                        continue
+                    if match_masked_id(custom_id):
+                        logging.info(f"Task with custom_id '{custom_id}' is masked. Skipping.")
                         continue
                     if (output_file, custom_id) in processed_ids:
                         continue  # Skip already processed task
@@ -620,8 +632,15 @@ def main():
         "--mask_input_fields",
         type=str,
         default="",
-        help="Ignore these semicolon-separated fields from the input JSON when building the payload."
+        help="Ignore these comma-separated fields from the input JSON when building the payload."
     )
+    parser.add_argument(
+        "--mask-ids",
+        type=str,
+        default="",
+        help="Comma-separated custom_ids to skip processing. Support wildcards (*)."
+    )
+
     parser.add_argument(
         "--test",
         action="store_true",
@@ -641,14 +660,14 @@ def main():
             logging.error("Must specify either --io or --input_file and --output_file.")
             sys.exit(1)
         processed_ids = load_processed_ids(args.output_file)
-        tasks = load_tasks(args.input_file, args.output_file, processed_ids)
+        tasks = load_tasks(args.input_file, args.output_file, processed_ids, args.mask_ids)
     else:
         io_mapping = load_io_mapping(io_mapping_file)
         processed_ids = set()
         tasks = []
         for input_file, output_file in io_mapping.items():
             curr_processed = load_processed_ids(output_file)
-            tasks.extend(load_tasks(input_file, output_file, curr_processed))
+            tasks.extend(load_tasks(input_file, output_file, curr_processed, args.mask_ids))
             processed_ids.update(curr_processed)
 
     if not tasks:
