@@ -1,6 +1,7 @@
 import myllmutils
 from myllmutils import LLMService, ZeroShotMessages, FewShotMessages, ZeroShotVLMessages
 from myllmutils import prepare_offline_inference, volcano_template
+import os
 
 
 def example_zeroshot():
@@ -66,7 +67,6 @@ def example_sampling():
                                         n=5))
 
 def example_deepseek():
-    import os
     chat_llm = LLMService("https://api.deepseek.com", os.environ.get("DS_API_KEY"))
     chat_llm.set_output_dir("llm_output")
     print(chat_llm.chat_complete(ZeroShotMessages(user_query="What is the sum of 124 and 789?"),
@@ -142,6 +142,24 @@ def example_vl():
     chat_llm = LLMService(output_dir="llm_output")
     print(chat_llm.chat_complete(messages1,"gpt-5-nano", return_str=True, use_cache=True))
 
+
+def example_batch_single():
+    query = {
+        "custom_id": "example_1",
+        "body": {
+            "messages": [{"role": "user", "content": "How many legs does a spider have?"}],
+        }
+    }
+    api_config = {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": os.environ.get("OPENAI_API_KEY"),
+        "model": "gpt-5-nano",
+    }
+    from myllmutils.batch_process import process_single_query
+    result = process_single_query(query, api_config, stream=True)
+    print(result)
+
+
 if __name__ == '__main__':
     # check the configuration
     print(myllmutils.about())
@@ -155,6 +173,7 @@ if __name__ == '__main__':
     # example_cache()
     # example_parallel() # TODO test parallel with completion
     # example_parallel_multiple()
-    example_ignore_cache_params()
+    # example_ignore_cache_params()
     # example_offline()
-    example_vl()
+    # example_vl()
+    example_batch_single()

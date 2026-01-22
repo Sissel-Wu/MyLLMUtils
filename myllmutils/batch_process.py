@@ -281,15 +281,23 @@ def build_payload(task_data: Dict[str, Any],
     return default_params
 
 
-def load_api_config(file_path: str) -> Dict[str, Any]:
+def load_api_config(api_config: str | Dict[str, Any]) -> Dict[str, Any]:
     """
     Loads model configuration from a JSON or YAML file.
 
     Args:
-        file_path: Path to the config file.
+        api_config: Path to the config file, or the config itself.
     Returns:
         A dictionary with model configuration.
     """
+    if type(api_config) == dict:
+        assert "base_url" in api_config, "The 'base_url' field must be defined in api_config."
+        assert "model" in api_config, "The 'model' field must be defined in api_config."
+        assert "api_key" in api_config, "The 'api_key' field must be defined in api_config."
+        return api_config
+
+    assert type(api_config) == str, "The 'api_config' must be a path to the config file or a Dict."
+    file_path = api_config
     if not os.path.exists(file_path):
         logging.error("Model config file not found: %s", file_path)
         raise FileNotFoundError(f"Model config file not found: {file_path}")
@@ -340,20 +348,30 @@ def simplify_images(payload):
                 if isinstance(item, dict) and item.get("type") == "image_url":
                     url = item["image_url"]["url"]
                     if url.startswith("data:image/"):
-                        item["image_url"]["url"] = item["image_url"]["url"][:40]
+                        item["image_url"]["url"] = item["image_url"]["url"][-40:]
     return res
 
 
 def process_single_query(
         task_data: Dict[str, Any],
-        args: argparse.Namespace
+        api_config: str | Dict[str, Any],
+        mask_input_fields: str = "",
+        stream: bool = False,
+        max_retries: int = 5,
+        timeout: int = 60,
+        no_verify: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Sends a single query to the API and handles retries.
 
     Args:
-        task_data: The JSON object for a single query from the input file.
-        args: The arguments passed from command line.
+        task_data: The JSON object like {"custom_id": ..., "body": { "messages": ..., "temperature": ... }}.
+        api_config: Path to the config file, or the config itself.
+        mask_input_fields: Comma-separated fields to ignore from input JSON.
+        stream: Whether to enable streaming mode.
+        max_retries: Maximum number of retries for server errors.
+        timeout: Request timeout in seconds.
+        no_verify: Whether to disable SSL verification.
 
     Returns:
         A dictionary in the format {"custom_id": ..., "response": ...} on
@@ -364,15 +382,15 @@ def process_single_query(
         logging.error("Task data missing 'custom_id'. Skipping: %s", task_data)
         return None
 
-    api_config = load_api_config(args.api_config) if args.api_config else None
-    payload = build_payload(task_data, api_config, args.mask_input_fields)
+    api_config = load_api_config(api_config)
+    payload = build_payload(task_data, api_config, mask_input_fields)
     if 'model' not in payload:
         logging.error(
             "No model specified for task %s. Provide a model in the input data or via config.",
             custom_id
         )
         return None
-    if args.stream:
+    if stream:
         payload['stream'] = True
 
     base_url = api_config.get('base_url')
@@ -387,23 +405,23 @@ def process_single_query(
     retries = 0
     backoff_factor = 1.0  # Initial backoff time in seconds
 
-    while retries < args.max_retries:
+    while retries < max_retries:
         try:
-            verify = not args.no_verify
+            verify = not no_verify
             response = requests.post(
                 f"{base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=args.timeout,
+                timeout=timeout,
                 verify=verify,
-                stream=args.stream  # Enable streaming for the requests call
+                stream=stream  # Enable streaming for the requests call
             )
 
             # --- Handle HTTP Status Codes ---
 
             # 200 OK: Success!
             if response.status_code == 200:
-                if not args.stream:
+                if not stream:
                     # Non-streaming: just return the JSON body
                     return {"custom_id": custom_id, "response": response.json(), "query": simplify_images(payload)}
                 else:
@@ -416,7 +434,7 @@ def process_single_query(
             elif 400 <= response.status_code < 500:
                 # Read response text for logging, even if streaming was requested
                 response_text = ""
-                if args.stream:
+                if stream:
                     # If we error'd early, we might be able to read text
                     try:
                         response_text = response.text
@@ -436,7 +454,7 @@ def process_single_query(
             elif response.status_code in [429] or response.status_code >= 500:
                 # Read response text for logging
                 response_text = ""
-                if args.stream:
+                if stream:
                     try:
                         response_text = response.text
                     except Exception:
@@ -446,13 +464,13 @@ def process_single_query(
 
                 logging.warning(
                     "Server error %d for %s: %s. Retrying (%d/%d)...",
-                    response.status_code, custom_id, response_text, retries + 1, args.max_retries
+                    response.status_code, custom_id, response_text, retries + 1, max_retries
                 )
 
             # Other unexpected codes
             else:
                 response_text = ""
-                if args.stream:
+                if stream:
                     try:
                         response_text = response.text
                     except Exception:
@@ -462,31 +480,31 @@ def process_single_query(
 
                 logging.warning(
                     "Unexpected status code %d for %s: %s. Retrying (%d/%d)...",
-                    response.status_code, custom_id, response_text, retries + 1, args.max_retries
+                    response.status_code, custom_id, response_text, retries + 1, max_retries
                 )
 
         except requests.exceptions.Timeout:
             logging.warning(
                 "Request timed out for %s. Retrying (%d/%d)...",
-                custom_id, retries + 1, args.max_retries
+                custom_id, retries + 1, max_retries
             )
 
         except requests.exceptions.RequestException as e:
             # Catch other requests-related errors (e.g., connection error)
             logging.warning(
                 "Request exception for %s: %s. Retrying (%d/%d)...",
-                custom_id, e, retries + 1, args.max_retries
+                custom_id, e, retries + 1, max_retries
             )
 
         # Exponential backoff
         retries += 1
-        if retries < args.max_retries:
+        if retries < max_retries:
             sleep_time = backoff_factor * (2 ** retries)
             logging.info("Waiting %.2f seconds before retrying %s...", sleep_time, custom_id)
             time.sleep(sleep_time)
 
     logging.error(
-        "Max retries (%d) exceeded for %s. Skipping.", args.max_retries, custom_id
+        "Max retries (%d) exceeded for %s. Skipping.", max_retries, custom_id
     )
     return None
 
@@ -635,7 +653,7 @@ def main():
         help="Ignore these comma-separated fields from the input JSON when building the payload."
     )
     parser.add_argument(
-        "--mask-ids",
+        "--mask_ids",
         type=str,
         default="",
         help="Comma-separated custom_ids to skip processing. Support wildcards (*)."
@@ -692,7 +710,12 @@ def main():
                 executor.submit(
                     process_single_query,
                     task,
-                    args
+                    args.api_config,
+                    args.mask_input_fields,
+                    args.stream,
+                    args.max_retries,
+                    args.timeout,
+                    args.no_verify
                 ): (output_file, task)
                 for output_file, task in tasks
             }
