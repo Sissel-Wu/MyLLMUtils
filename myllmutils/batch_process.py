@@ -54,7 +54,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, Tuple
 
 # Try to import requests, fail gracefully if not installed.
 try:
@@ -255,10 +255,12 @@ def build_payload(task_data: Dict[str, Any],
     if "body" in task_data:
         payload = task_data["body"]
     else:
-        raise Exception("The json does not contain a body.")
+        raise ValueError("The json does not contain a 'body'.")
 
-    assert isinstance(payload, dict), "The 'body' field must be a JSON object."
-    assert "messages" in payload, "The 'body' must contain a 'messages' field."
+    if not isinstance(payload, dict):
+        raise ValueError("The 'body' field must be a dict (JSON object).")
+    if "messages" not in payload:
+        raise ValueError("The 'body' field must contain a 'messages' field.")
     payload["messages"] = _replace_local_url(payload["messages"])
 
     mask_input_fields = mask_input_fields.split(",")
@@ -268,8 +270,8 @@ def build_payload(task_data: Dict[str, Any],
             payload.pop(field)
 
     default_params = api_config.copy()
-    default_params.pop("base_url")
-    default_params.pop("api_key")
+    default_params.pop("base_url", None)
+    default_params.pop("api_key", None)
 
     # Merge default params from config into payload if not already present
     # Use the values from payload if conflicting
@@ -291,9 +293,6 @@ def load_api_config(api_config: str | Dict[str, Any]) -> Dict[str, Any]:
         A dictionary with model configuration.
     """
     if type(api_config) == dict:
-        assert "base_url" in api_config, "The 'base_url' field must be defined in api_config."
-        assert "model" in api_config, "The 'model' field must be defined in api_config."
-        assert "api_key" in api_config, "The 'api_key' field must be defined in api_config."
         return api_config
 
     assert type(api_config) == str, "The 'api_config' must be a path to the config file or a Dict."
@@ -310,11 +309,11 @@ def load_api_config(api_config: str | Dict[str, Any]) -> Dict[str, Any]:
                 import yaml  # Local import to avoid dependency if not used
             except ImportError:
                 logging.error("PyYAML is not installed. Please install it to use YAML config files, or use json instead.")
-                raise Exception("PyYAML is not installed.")
+                raise
             return yaml.safe_load(f)
         else:
             logging.error("Unsupported config file format: %s", file_path)
-            raise Exception("Unsupported config file format. Use .json or .yaml/.yml")
+            raise ValueError("Unsupported config file format. Use .json or .yaml/.yml")
 
 
 def load_io_mapping(file_path: str) -> Dict[str, Any]:
@@ -360,7 +359,7 @@ def process_single_query(
         max_retries: int = 5,
         timeout: int = 60,
         no_verify: bool = False,
-) -> Optional[Dict[str, Any]]:
+) -> Tuple[bool, Dict[str, Any]] | Tuple[bool, str]:
     """
     Sends a single query to the API and handles retries.
 
@@ -368,35 +367,45 @@ def process_single_query(
         task_data: The JSON object like {"custom_id": ..., "body": { "messages": ..., "temperature": ... }}.
         api_config: Path to the config file, or the config itself.
         mask_input_fields: Comma-separated fields to ignore from input JSON.
-        stream: Whether to enable streaming mode.
+        stream: Whether to enable streaming mode. No need to set 'stream' in api_config.
         max_retries: Maximum number of retries for server errors.
         timeout: Request timeout in seconds.
         no_verify: Whether to disable SSL verification.
 
     Returns:
-        A dictionary in the format {"custom_id": ..., "response": ...} on
-        success, or None on failure after retries.
+        A tuple of (success, result) where success is a boolean indicating success.
+        result is a dictionary in the format {"custom_id": ..., "response": ...} on
+        success, or a string for error message on failure.
     """
+
+    def after_error(error_msg):
+        logging.error(error_msg)
+        return False, error_msg
+
     custom_id = task_data.get("custom_id")
     if not custom_id:
-        logging.error("Task data missing 'custom_id'. Skipping: %s", task_data)
-        return None
+        return after_error(f"Task data missing 'custom_id'. Skipping: {task_data}")
 
     api_config = load_api_config(api_config)
     payload = build_payload(task_data, api_config, mask_input_fields)
     if 'model' not in payload:
-        logging.error(
-            "No model specified for task %s. Provide a model in the input data or via config.",
-            custom_id
-        )
-        return None
+        return after_error(f"No 'model' specified in api_config or task_data for task {custom_id}.")
     if stream:
         payload['stream'] = True
 
-    base_url = api_config.get('base_url')
-    api_key = api_config.get('api_key')
+    base_url = api_config.get('base_url', None)
+    api_key = api_config.get('api_key', None)
+    if not base_url:
+        return after_error(f"No 'base_url' specified in the config.")
+    if not api_key:
+        logging.warning("No 'api_key' specified in the config.")
+        api_key = "NONE"
+
     if api_key.startswith("env::"):
-        api_key = os.getenv(api_key[len("env::"):])
+        env_key = api_key[len("env::"):]
+        api_key = os.getenv(env_key)
+        if not api_key:
+            return after_error(f"The environment {env_key} after 'env::' is not set.")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -405,6 +414,7 @@ def process_single_query(
     retries = 0
     backoff_factor = 1.0  # Initial backoff time in seconds
 
+    last_error_msg = ""
     while retries < max_retries:
         try:
             verify = not no_verify
@@ -423,37 +433,16 @@ def process_single_query(
             if response.status_code == 200:
                 if not stream:
                     # Non-streaming: just return the JSON body
-                    return {"custom_id": custom_id, "response": response.json(), "query": simplify_images(payload)}
+                    return True, {"custom_id": custom_id, "response": response.json(), "query": simplify_images(payload)}
                 else:
                     # Streaming: process the stream and assemble the full response
                     assembled_response = _process_streamed_response(response)
-                    return {"custom_id": custom_id, "response": assembled_response, "query": simplify_images(payload)}
-
-            # 4xx Client Errors: Bad request, auth error, etc.
-            # These are unlikely to succeed on retry.
-            elif 400 <= response.status_code < 500:
-                # Read response text for logging, even if streaming was requested
-                response_text = ""
-                if stream:
-                    # If we error'd early, we might be able to read text
-                    try:
-                        response_text = response.text
-                    except Exception:
-                        response_text = "[Could not read response text]"
-                else:
-                    response_text = response.text
-
-                logging.error(
-                    "Client error %d for %s: %s. Skipping.",
-                    response.status_code, custom_id, response_text
-                )
-                return None  # Do not retry
+                    return True, {"custom_id": custom_id, "response": assembled_response, "query": simplify_images(payload)}
 
             # 5xx Server Errors & 429 Rate Limit: Transient errors.
             # These are worth retrying.
             elif response.status_code in [429] or response.status_code >= 500:
                 # Read response text for logging
-                response_text = ""
                 if stream:
                     try:
                         response_text = response.text
@@ -466,10 +455,26 @@ def process_single_query(
                     "Server error %d for %s: %s. Retrying (%d/%d)...",
                     response.status_code, custom_id, response_text, retries + 1, max_retries
                 )
+                last_error_msg = f"Server error {response.status_code}: {response_text}."
+
+            # 4xx Client Errors: Bad request, auth error, etc.
+            # These are unlikely to succeed on retry.
+            elif 400 <= response.status_code < 500:
+                # Read response text for logging, even if streaming was requested
+                if stream:
+                    # If we error'd early, we might be able to read text
+                    try:
+                        response_text = response.text
+                    except Exception:
+                        response_text = "[Could not read response text]"
+                else:
+                    response_text = response.text
+
+                # Do not retry
+                return after_error(f"Client error {response.status_code} for {custom_id}: {response_text}. Skipping.")
 
             # Other unexpected codes
             else:
-                response_text = ""
                 if stream:
                     try:
                         response_text = response.text
@@ -482,12 +487,14 @@ def process_single_query(
                     "Unexpected status code %d for %s: %s. Retrying (%d/%d)...",
                     response.status_code, custom_id, response_text, retries + 1, max_retries
                 )
+                last_error_msg = f"Unexpected status code {response.status_code}: {response_text}."
 
         except requests.exceptions.Timeout:
             logging.warning(
                 "Request timed out for %s. Retrying (%d/%d)...",
                 custom_id, retries + 1, max_retries
             )
+            last_error_msg = f"Request timed out."
 
         except requests.exceptions.RequestException as e:
             # Catch other requests-related errors (e.g., connection error)
@@ -495,6 +502,7 @@ def process_single_query(
                 "Request exception for %s: %s. Retrying (%d/%d)...",
                 custom_id, e, retries + 1, max_retries
             )
+            last_error_msg = f"Request exception: {e}."
 
         # Exponential backoff
         retries += 1
@@ -503,10 +511,7 @@ def process_single_query(
             logging.info("Waiting %.2f seconds before retrying %s...", sleep_time, custom_id)
             time.sleep(sleep_time)
 
-    logging.error(
-        "Max retries (%d) exceeded for %s. Skipping.", max_retries, custom_id
-    )
-    return None
+    return after_error(f"Max retries ({max_retries}) exceeded for {custom_id}. Skipping. Last error message: {last_error_msg}")
 
 
 # --- Main Processing Logic ---
@@ -733,9 +738,9 @@ def main():
                 custom_id = task.get("custom_id", "UNKNOWN")
 
                 try:
-                    result = future.result()
+                    success, result = future.result()
                     # If result is not None, it was successful
-                    if result:
+                    if success:
                         # Ensure output directory exists
                         dirpath = os.path.dirname(output_file)
                         if dirpath:

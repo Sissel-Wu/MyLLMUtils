@@ -144,20 +144,30 @@ def example_vl():
 
 
 def example_batch_single():
+    from myllmutils.batch_process import process_single_query
     query = {
         "custom_id": "example_1",
         "body": {
-            "messages": [{"role": "user", "content": "How many legs does a spider have?"}],
+            "messages": [{"role": "user", "content": "How many 'l's are in the word 'lullaby'? Place the final answer in \\boxed{}"}],
         }
     }
+
+    # test client-side error handling
+    print(process_single_query(query, {}))
+    print(process_single_query(query, {'model': 'gpt-5-nano'}))
+    print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1', 'api_key': "env::OPENAI_KEY"}))
+    print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1'}))
+
+    # test retries error message
     api_config = {
         "base_url": "https://api.openai.com/v1",
-        "api_key": os.environ.get("OPENAI_API_KEY"),
+        "api_key": "env::OPENAI_API_KEY",
         "model": "gpt-5-nano",
     }
-    from myllmutils.batch_process import process_single_query
-    result = process_single_query(query, api_config, stream=True)
-    print(result)
+    print(process_single_query(query, api_config, timeout=1, max_retries=2))
+
+    # normal case
+    print(process_single_query(query, api_config, stream=True))
 
 
 if __name__ == '__main__':
