@@ -170,7 +170,13 @@ def example_batch_single():
     print(process_single_query(query, api_config, stream=True))
 
 
-if __name__ == '__main__':
+def example_count_tokens():
+    from myllmutils.batch_process import TokenCounter
+    counter = TokenCounter(model_name="deepseek-ai/DeepSeek-V3.2")
+    print(f"tokens: {counter.count_tokens("Hello, how are you?")}")
+
+
+def main():
     # check the configuration
     print(myllmutils.about())
 
@@ -186,4 +192,5 @@ if __name__ == '__main__':
     # example_ignore_cache_params()
     # example_offline()
     # example_vl()
-    example_batch_single()
+    # example_batch_single()
+    example_count_tokens()

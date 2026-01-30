@@ -588,6 +588,35 @@ def load_tasks(input_file: str, output_file: str, processed_ids: Set[tuple[str, 
     return tasks_to_process
 
 
+class TokenCounter:
+    def __init__(self, model_name: str, kind: str = "huggingface"):
+        """
+        Initializes the TokenCounter with the specified model and tokenizer kind.
+        :param model_name: If kind is "huggingface", this is the model name in HuggingFace transformers.
+        :param kind: Currently only "huggingface" is supported.
+        """
+        self.model = model_name
+        if kind not in ["huggingface"]:
+            raise ValueError("kind must be 'huggingface' now")
+        self.kind = kind
+        if kind == "huggingface":
+            try:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+            except ImportError:
+                logging.error("Transformers library is not installed. Please install it to use TokenCounter with 'huggingface' kind.")
+                raise
+        else:  # TODO: other tokenizers
+            raise NotImplementedError
+
+    def count_tokens(self, text: str) -> int:
+        if self.kind == "huggingface":
+            tokens = self.tokenizer.encode(text)
+            return len(tokens)
+        else:
+            raise NotImplementedError
+
+
 def main():
     """
     Main function to parse arguments and orchestrate the batch processing.
