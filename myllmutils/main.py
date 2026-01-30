@@ -1,6 +1,7 @@
 import myllmutils
 from myllmutils import LLMService, ZeroShotMessages, FewShotMessages, ZeroShotVLMessages
 from myllmutils import prepare_offline_inference, volcano_template
+from myllmutils.batch_process import process_single_query, TokenCounter
 import os
 
 
@@ -176,6 +177,30 @@ def example_count_tokens():
     print(f"tokens: {counter.count_tokens("Hello, how are you?")}")
 
 
+def example_stream_max_tokens():
+    from myllmutils.batch_process import TokenCounter
+
+    query = {
+        "custom_id": "stream_example_1",
+        "body": {
+            "messages": [{"role": "user", "content": "Tell a short, multi-sentence story about a robot who learns to paint."}],
+        }
+    }
+
+    api_config = {
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "env::OPENAI_API_KEY",
+        "model": "gpt-5-nano",
+    }
+
+    # TokenCounter used to count tokens; choose an installed tokenizer name.
+    tc = TokenCounter(model_name="gpt2")
+
+    # Allow up to 30 tokens across content+reasoning in the stream
+    success, result = process_single_query(query, api_config, stream=True, max_stream_tokens=30, token_counter=tc)
+    print(success, result)
+
+
 def main():
     # check the configuration
     print(myllmutils.about())
@@ -193,4 +218,5 @@ def main():
     # example_offline()
     # example_vl()
     # example_batch_single()
-    example_count_tokens()
+    # example_count_tokens()
+    example_stream_max_tokens()

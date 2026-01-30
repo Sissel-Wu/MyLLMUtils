@@ -53,6 +53,7 @@ import logging
 import os
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Optional, Set, Tuple
 
@@ -78,7 +79,7 @@ logging.basicConfig(
 
 # --- API Call Logic ---
 
-def _process_streamed_response(response: requests.Response) -> Dict[str, Any]:
+def _process_streamed_response(response: requests.Response, max_stream_tokens: int = 0, token_counter=None) -> Dict[str, Any]:
     """
     Processes a streamed API response (SSE) and assembles a single
     JSON object mimicking the non-streaming format.
@@ -98,6 +99,10 @@ def _process_streamed_response(response: requests.Response) -> Dict[str, Any]:
     model_info = ""
     response_id = ""
     finish_reason = "stop"  # Default
+
+    # `token_counter` may be provided by the caller (recommended) to avoid
+    # creating tokenizer instances inside worker threads. If None, streaming
+    # token limits are disabled.
 
     try:
         for line_bytes in response.iter_lines():
@@ -130,6 +135,22 @@ def _process_streamed_response(response: requests.Response) -> Dict[str, Any]:
                             full_reasoning += delta['reasoning_content']
                         elif delta.get('reasoning'):
                             full_reasoning += delta['reasoning']
+
+                        # --- Enforce max stream token limit (content + reasoning) ---
+                        if token_counter is not None and max_stream_tokens and max_stream_tokens > 0:
+                            try:
+                                combined_text = (full_content or "") + ("\n" + full_reasoning if full_reasoning else "")
+                                total_tokens = token_counter.count_tokens(combined_text)
+                                if total_tokens > max_stream_tokens:
+                                    finish_reason = 'length'  # Indicate cut-off due to token limit
+                                    try:
+                                        response.close()
+                                    except Exception:
+                                        pass
+                                    break
+                            except Exception:
+                                # If counting fails for any reason, continue without enforcing
+                                logging.warning("Token counting failed during streaming; continuing without enforcement.")
 
                         # --- 3. Process Tool Call Deltas ---
                         if delta.get('tool_calls'):
@@ -352,13 +373,15 @@ def simplify_images(payload):
 
 
 def process_single_query(
-        task_data: Dict[str, Any],
-        api_config: str | Dict[str, Any],
-        mask_input_fields: str = "",
-        stream: bool = False,
-        max_retries: int = 5,
-        timeout: int = 60,
-        no_verify: bool = False,
+    task_data: Dict[str, Any],
+    api_config: str | Dict[str, Any],
+    mask_input_fields: str = "",
+    stream: bool = False,
+    max_retries: int = 5,
+    timeout: int = 60,
+    no_verify: bool = False,
+    max_stream_tokens: int = 0,
+    token_counter=None,
 ) -> Tuple[bool, Dict[str, Any]] | Tuple[bool, str]:
     """
     Sends a single query to the API and handles retries.
@@ -436,7 +459,7 @@ def process_single_query(
                     return True, {"custom_id": custom_id, "response": response.json(), "query": simplify_images(payload)}
                 else:
                     # Streaming: process the stream and assemble the full response
-                    assembled_response = _process_streamed_response(response)
+                    assembled_response = _process_streamed_response(response, max_stream_tokens=max_stream_tokens, token_counter=token_counter)
                     return True, {"custom_id": custom_id, "response": assembled_response, "query": simplify_images(payload)}
 
             # 5xx Server Errors & 429 Rate Limit: Transient errors.
@@ -606,13 +629,16 @@ class TokenCounter:
             except ImportError:
                 logging.error("Transformers library is not installed. Please install it to use TokenCounter with 'huggingface' kind.")
                 raise
+            # Make the tokenizer usage thread-safe by guarding encodings with a lock.
+            self._lock = threading.Lock()
         else:  # TODO: other tokenizers
             raise NotImplementedError
 
     def count_tokens(self, text: str) -> int:
         if self.kind == "huggingface":
-            tokens = self.tokenizer.encode(text)
-            return len(tokens)
+            with self._lock:
+                tokens = self.tokenizer.encode(text)
+                return len(tokens)
         else:
             raise NotImplementedError
 
@@ -699,6 +725,20 @@ def main():
         help="Run only 2 tasks for quick verification."
     )
 
+    parser.add_argument(
+        "--max_stream_tokens",
+        type=int,
+        default=0,
+        help="Maximum tokens (content+reasoning) to allow when assembling streamed responses. 0 means no limit."
+    )
+
+    parser.add_argument(
+        "--tokenizer_model",
+        type=str,
+        default=None,
+        help="HuggingFace model name used by TokenCounter to count tokens when enforcing --max_stream_tokens."
+    )
+
     args = parser.parse_args()
 
     # --- Start Processing ---
@@ -726,6 +766,20 @@ def main():
         logging.info("No new tasks to process. Exiting.")
         return
 
+    # If max_stream_tokens is requested, require a tokenizer model and enable streaming.
+    token_counter = None
+    if args.max_stream_tokens and args.max_stream_tokens > 0:
+        if not args.tokenizer_model:
+            logging.critical("--max_stream_tokens requires --tokenizer_model to be set. Exiting.")
+            sys.exit(1)
+        # Turn on stream mode automatically when enforcing stream token limits
+        args.stream = True
+        try:
+            token_counter = TokenCounter(model_name=args.tokenizer_model)
+        except Exception as e:
+            logging.critical("Failed to initialize TokenCounter for '%s': %s", args.tokenizer_model, e)
+            sys.exit(1)
+
     # 3. For testing, limit to 2 tasks
     if args.test:
         tasks = tasks[:2]
@@ -749,7 +803,9 @@ def main():
                     args.stream,
                     args.max_retries,
                     args.timeout,
-                    args.no_verify
+                    args.no_verify,
+                    args.max_stream_tokens,
+                    token_counter
                 ): (output_file, task)
                 for output_file, task in tasks
             }
