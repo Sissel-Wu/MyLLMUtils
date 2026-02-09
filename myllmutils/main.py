@@ -145,7 +145,7 @@ def example_vl():
 
 
 def example_batch_single():
-    from myllmutils.batch_process import process_single_query
+    from myllmutils.batch_process import process_single_query, process_single_query_async
     query = {
         "custom_id": "example_1",
         "body": {
@@ -154,21 +154,30 @@ def example_batch_single():
     }
 
     # test client-side error handling
-    print(process_single_query(query, {}))
-    print(process_single_query(query, {'model': 'gpt-5-nano'}))
-    print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1', 'api_key': "env::OPENAI_KEY"}))
-    print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1'}))
-
-    # test retries error message
+    # print(process_single_query(query, {}))
+    # print(process_single_query(query, {'model': 'gpt-5-nano'}))
+    # print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1', 'api_key': "env::OPENAI_KEY"}))
+    # print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1'}))
+    
     api_config = {
         "base_url": "https://api.openai.com/v1",
         "api_key": "env::OPENAI_API_KEY",
         "model": "gpt-5-nano",
     }
-    print(process_single_query(query, api_config, timeout=1, max_retries=2))
+    # test retries error message
+    # print(process_single_query(query, api_config, timeout=1, max_retries=2))
 
     # normal case
-    print(process_single_query(query, api_config, stream=True))
+    # print(process_single_query(query, api_config, stream=True))
+
+    # async case
+    import asyncio
+    import httpx
+    async def async_test():
+        async with httpx.AsyncClient() as async_client:
+            success, result = await process_single_query_async(query, api_config, client=async_client, stream=True)
+            print(success, result)
+    asyncio.run(async_test())
 
 
 def example_count_tokens():
@@ -217,6 +226,6 @@ def main():
     # example_ignore_cache_params()
     # example_offline()
     # example_vl()
-    # example_batch_single()
+    example_batch_single()
     # example_count_tokens()
-    example_stream_max_tokens()
+    # example_stream_max_tokens()
