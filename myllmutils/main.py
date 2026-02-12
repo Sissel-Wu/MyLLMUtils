@@ -1,7 +1,9 @@
 import myllmutils
 from myllmutils import LLMService, ZeroShotMessages, FewShotMessages, ZeroShotVLMessages
 from myllmutils import prepare_offline_inference, volcano_template
-from myllmutils.batch_process import process_single_query, TokenCounter
+from myllmutils.batch_process import process_single_query, process_single_query_async, TokenCounter
+import asyncio
+import httpx
 import os
 
 
@@ -145,19 +147,24 @@ def example_vl():
 
 
 def example_batch_single():
-    from myllmutils.batch_process import process_single_query, process_single_query_async
     query = {
         "custom_id": "example_1",
         "body": {
-            "messages": [{"role": "user", "content": "How many 'l's are in the word 'lullaby'? Place the final answer in \\boxed{}"}],
+            "messages": [
+                {
+                    # "role": "user", "content": "How many 'l's are in the word 'lullaby'? Place the final answer in \\boxed{}"
+                    "role": "user", "content": "12345 * 6789 = ?"
+                }
+            ],
         }
     }
 
     # test client-side error handling
-    # print(process_single_query(query, {}))
-    # print(process_single_query(query, {'model': 'gpt-5-nano'}))
-    # print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1', 'api_key': "env::OPENAI_KEY"}))
-    # print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1'}))
+    print("Client-side error test cases:")
+    print(process_single_query(query, {}))
+    print(process_single_query(query, {'model': 'gpt-5-nano'}))
+    print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1', 'api_key': "env::OPENAI_KEY"}))
+    print(process_single_query(query, {'model': 'gpt-5-nano', 'base_url': 'https://api.openai.com/v1'}))
     
     api_config = {
         "base_url": "https://api.openai.com/v1",
@@ -165,19 +172,27 @@ def example_batch_single():
         "model": "gpt-5-nano",
     }
     # test retries error message
-    # print(process_single_query(query, api_config, timeout=1, max_retries=2))
+    print("Retries test case:")
+    print(process_single_query(query, api_config, timeout=1, max_retries=2))
 
     # normal case
-    # print(process_single_query(query, api_config, stream=True))
+    print("Normal case:")
+    print(process_single_query(query, api_config))
+    # normal streaming
+    print("Streaming case:")
+    print(process_single_query(query, api_config, stream=True))
 
-    # async case
-    import asyncio
-    import httpx
+    # async case    
     async def async_test():
-        async with httpx.AsyncClient() as async_client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60)) as async_client:
+            print("Async normal case:")
+            success, result = await process_single_query_async(query, api_config, client=async_client)            
+            print(success, result)
+            # streaming
+            print("Async streaming case:")
             success, result = await process_single_query_async(query, api_config, client=async_client, stream=True)
             print(success, result)
-    asyncio.run(async_test())
+    asyncio.run(async_test())    
 
 
 def example_count_tokens():
@@ -197,17 +212,23 @@ def example_stream_max_tokens():
     }
 
     api_config = {
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "env::OPENAI_API_KEY",
-        "model": "gpt-5-nano",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "env::DS_API_KEY",
+        "model": "deepseek-chat",
     }
 
     # TokenCounter used to count tokens; choose an installed tokenizer name.
-    tc = TokenCounter(model_name="gpt2")
+    tc = TokenCounter(model_name="deepseek-ai/DeepSeek-V3.2")
 
     # Allow up to 30 tokens across content+reasoning in the stream
     success, result = process_single_query(query, api_config, stream=True, max_stream_tokens=30, token_counter=tc)
     print(success, result)
+
+    async def async_test():
+        async with httpx.AsyncClient() as async_client:
+            success, result = await process_single_query_async(query, api_config, client=async_client, stream=True, max_stream_tokens=30, token_counter=tc)
+            print(success, result)
+    asyncio.run(async_test())
 
 
 def main():

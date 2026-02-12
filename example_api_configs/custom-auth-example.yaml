@@ -1,0 +1,38 @@
+# Example config demonstrating custom authorization headers
+#
+# The auth_header and auth_value fields allow you to override the default
+# authorization scheme for the protocol.
+#
+# These are reserved config keys and will NOT be sent to the API as part of the payload.
+#
+# Features:
+# - auth_header: Specify a custom header key (e.g., 'X-API-Key', 'Authorization')
+# - auth_value: Specify a custom header value (supports {api_key} placeholder)
+# - If not specified, uses the protocol defaults:
+#   * openai: Authorization: Bearer {api_key}
+#   * gemini: x-goog-api-key: {api_key}
+#
+# Other reserved keys (not sent to API):
+# - base_url
+# - api_key
+# - protocol
+
+base_url: https://api.example.com/v1
+api_key: env::MY_API_KEY
+model: my-model
+
+# Example 1: Custom header key with Bearer token
+auth_header: X-API-Key
+auth_value: Bearer {api_key}
+
+# Example 2: Direct API key in header (common for some providers)
+# auth_header: Authorization
+# auth_value: {api_key}
+
+# Example 3: Custom prefix
+# auth_header: X-Custom-Auth
+# auth_value: MyCustomPrefix {api_key}
+
+# Example 4: No API key substitution (hardcoded or token-based)
+# auth_header: Authorization
+# auth_value: Bearer my-hardcoded-token
