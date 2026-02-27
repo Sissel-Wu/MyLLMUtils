@@ -1,6 +1,6 @@
 [project]
 name = "myllmutils"
-version = "0.7.1"
+version = "0.7.2"
 description = "A lightweight library to ease LLM query and storage"
 authors = [{name = "Sissel-Wu", email = "sissel126@gmail.com"}]
 readme = "README.md"
@@ -10,7 +10,7 @@ dependencies = [
     "tiktoken>=0.12",
     "httpx[socks]>=0.28.1",
     "pyyaml>=6.0.3",
-    "pillow>=12.1.0"
+    "pillow>=12.1.1"
 ]
 
 [project.scripts]

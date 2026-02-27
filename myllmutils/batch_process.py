@@ -102,7 +102,7 @@ class BaseProtocol(ABC):
     """Abstract base class for LLM API protocols."""
 
     @abstractmethod
-    def get_endpoint(self, base_url: str, model: str) -> str:
+    def get_endpoint(self, base_url: str, model: str, stream: bool) -> str:
         """Build the API endpoint URL."""
         pass
 
@@ -114,6 +114,21 @@ class BaseProtocol(ABC):
     @abstractmethod
     def format_default_auth_value(self, api_key: str) -> str:
         """Return the formatted default header value for this protocol (e.g., 'Bearer {key}')."""
+        pass
+
+    @abstractmethod
+    def prepare_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare and validate protocol-specific payload.
+
+        Args:
+            payload: Raw payload from task data body
+
+        Returns:
+            Processed payload ready for API request
+
+        Raises:
+            ValueError: If payload is invalid for this protocol
+        """
         pass
 
     def get_headers(self, api_key: str, auth_header: Optional[str] = None, auth_value: Optional[str] = None) -> Dict[str, str]:
@@ -163,7 +178,7 @@ class BaseProtocol(ABC):
 class OpenAIProtocol(BaseProtocol):
     """OpenAI-compatible chat completions protocol."""
 
-    def get_endpoint(self, base_url: str, model: str) -> str:
+    def get_endpoint(self, base_url: str, model: str, stream: bool) -> str:
         return f"{base_url.rstrip('/')}/chat/completions"
 
     def get_default_auth_header(self) -> str:
@@ -172,12 +187,21 @@ class OpenAIProtocol(BaseProtocol):
     def format_default_auth_value(self, api_key: str) -> str:
         return f"Bearer {api_key}"
 
+    def prepare_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare OpenAI-format payload (requires 'messages' field)."""
+        if "messages" not in payload:
+            raise ValueError("OpenAI protocol requires 'messages' field in payload.")
+
+        # Process local image URLs in messages
+        payload["messages"] = _replace_local_url(payload["messages"])
+        return payload
+
     async def process_stream(
         self,
         response,
         max_stream_tokens: int,
         token_counter,
-        is_async: bool,
+        is_async: bool = False,
     ) -> Dict[str, Any]:
         """Process OpenAI-compatible SSE stream and assemble response.
 
@@ -364,8 +388,9 @@ class OpenAIProtocol(BaseProtocol):
 class GeminiProtocol(BaseProtocol):
     """Google Gemini 3 generateContent protocol."""
 
-    def get_endpoint(self, base_url: str, model: str) -> str:
-        return f"{base_url.rstrip('/')}/models/{model}:generateContent"
+    def get_endpoint(self, base_url: str, model: str, stream: bool) -> str:
+        action = "generateContent" if not stream else "streamGenerateContent?alt=sse"
+        return f"{base_url.rstrip('/')}/models/{model}:{action}"
 
     def get_default_auth_header(self) -> str:
         return "x-goog-api-key"
@@ -373,21 +398,175 @@ class GeminiProtocol(BaseProtocol):
     def format_default_auth_value(self, api_key: str) -> str:
         return api_key
 
+    def prepare_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare Gemini-format payload (requires 'contents' field)."""
+        if "contents" not in payload:
+            raise ValueError("Gemini protocol requires 'contents' field in payload.")
+
+        # Process local image URLs in contents
+        payload["contents"] = _replace_local_url_gemini(payload["contents"])
+        return payload
+
     async def process_stream(
         self,
         response,
         max_stream_tokens: int,
         token_counter,
-        is_async: bool
+        is_async: bool = False
     ) -> Dict[str, Any]:
-        """Process Gemini stream.
+        """Process Gemini SSE stream and assemble response.
 
-        TODO: Implement Gemini-specific stream processing.
-        For now, returns raw response to avoid breaking existing code.
+        Gemini streaming format (with alt=sse):
+        - Each chunk: data: {"candidates": [{"content": {"parts": [{"text": "..."}], "role": "model"}, "finishReason": "STOP"}]}
+        - Text content is in candidates[0].content.parts[].text (incremental deltas)
+        - Function calls are in parts as functionCall objects
+        - responseId ties the full response together
+
+        Returns assembled response in Gemini's native format.
         """
-        logging.warning("Gemini stream processing not yet implemented. Returning raw response.")
-        # Return the raw response for now - this will be handled differently
-        return {"error": "Gemini stream processing not implemented"}
+        full_content = ""
+        response_id = ""
+        model_info = ""
+        finish_reason = None
+        tool_calls = []
+        
+        # TODO: handle thought
+        try:
+            if is_async:
+                async for line in response.aiter_lines():
+                    if line and line.startswith('data: '):
+                        full_content, response_id, model_info, finish_reason, tool_calls = await self._process_stream_line(
+                            line, full_content, response_id, model_info, finish_reason, tool_calls,
+                            max_stream_tokens, token_counter, response
+                        )
+                        # Break if token limit reached
+                        if finish_reason == 'MAX_TOKENS':
+                            break
+            else:
+                for line in response.iter_lines():
+                    if line.startswith('data: '):
+                        full_content, response_id, model_info, finish_reason, tool_calls = await self._process_stream_line(
+                            line, full_content, response_id, model_info, finish_reason, tool_calls,
+                            max_stream_tokens, token_counter, response
+                        )
+                        # Break if token limit reached
+                        if finish_reason == 'MAX_TOKENS':
+                            break
+
+        except Exception:
+            logging.exception("Error while processing Gemini stream")
+            raise
+        finally:
+            if is_async:
+                await response.aclose()
+            else:
+                response.close()
+
+        # Build the assembled response in Gemini's native format
+        parts = []
+        if full_content:
+            parts.append({"text": full_content})
+
+        # Add function calls if present
+        for tool_call in tool_calls:
+            parts.append({
+                "functionCall": {
+                    "name": tool_call["name"],
+                    "args": tool_call["args"]
+                }
+            })
+
+        return {
+            "candidates": [{
+                "content": {
+                    "parts": parts,
+                    "role": "model"
+                },
+                "finishReason": finish_reason or "STOP",
+                "index": 0
+            }],
+            "usageMetadata": {
+                "promptTokenCount": None,
+                "completionTokenCount": None,
+                "totalTokenCount": None
+            },
+            "modelVersion": model_info,
+            "responseId": response_id
+        }
+
+    async def _process_stream_line(
+        self,
+        line: str,
+        full_content: str,
+        response_id: str,
+        model_info: str,
+        finish_reason: str,
+        tool_calls: list,
+        max_stream_tokens: int,
+        token_counter,
+        response,
+    ):
+        """Process a single SSE line from a Gemini streaming response."""
+        data_str = line[len('data: '):]
+
+        # Gemini may send [DONE] or empty data at the end
+        if data_str.strip() in ['[DONE]', '']:
+            return (full_content, response_id, model_info, finish_reason, tool_calls)
+
+        try:
+            chunk = json.loads(data_str)
+
+            # Extract responseId and modelVersion (only once)
+            if not response_id:
+                response_id = chunk.get('responseId', '')
+                model_info = chunk.get('modelVersion', '')
+
+            # Process candidates
+            candidates = chunk.get('candidates', [])
+            if not candidates:
+                return (full_content, response_id, model_info, finish_reason, tool_calls)
+
+            candidate = candidates[0]
+            content = candidate.get('content', {})
+            parts = content.get('parts', [])
+
+            # Process parts for text content and function calls
+            for part in parts:
+                # Text content (incremental delta)
+                if 'text' in part:
+                    full_content += part['text']
+
+                # Function/Tool calls (Gemini format)
+                if 'functionCall' in part:
+                    func_call = part['functionCall']
+                    tool_calls.append({
+                        "name": func_call.get('name', ''),
+                        "args": func_call.get('args', {})
+                    })
+
+            # Enforce max stream token limit
+            if token_counter is not None and max_stream_tokens and max_stream_tokens > 0:
+                try:
+                    loop = asyncio.get_event_loop()
+                    total_tokens = await loop.run_in_executor(
+                        None,
+                        token_counter.count_tokens,
+                        full_content
+                    )
+                    if total_tokens > max_stream_tokens:
+                        finish_reason = 'MAX_TOKENS'
+                        return (full_content, response_id, model_info, finish_reason, tool_calls)
+                except Exception:
+                    logging.warning("Token counting failed during streaming; continuing without enforcement.")
+
+            # Capture finish reason from candidate
+            if candidate.get('finishReason'):
+                finish_reason = candidate['finishReason']
+
+        except json.JSONDecodeError:
+            logging.warning("Failed to decode JSON chunk: %s", data_str)
+
+        return (full_content, response_id, model_info, finish_reason, tool_calls)
 
 
 # Protocol registry
@@ -448,7 +627,13 @@ def _prepare_request_context(
         return f"Task data missing 'custom_id'. Skipping: {task_data}"
 
     api_config = load_api_config(api_config)
-    payload = build_payload(task_data, api_config, mask_input_fields)
+
+    # Get protocol instance first (needed for payload preparation)
+    protocol_name = api_config.get("protocol", "openai")
+    protocol = get_protocol(protocol_name)
+
+    # Build payload using protocol-specific processing
+    payload = build_payload(task_data, api_config, mask_input_fields, protocol)
 
     if 'model' not in payload:
         logging.error("No 'model' specified in api_config or task_data for task %s.", custom_id)
@@ -456,10 +641,6 @@ def _prepare_request_context(
 
     if stream:
         payload['stream'] = True
-
-    # Get protocol instance
-    protocol_name = api_config.get("protocol", "openai")
-    protocol = get_protocol(protocol_name)
 
     base_url = api_config.get('base_url', None)
     api_key = api_config.get('api_key', None)
@@ -481,7 +662,7 @@ def _prepare_request_context(
 
     # Build endpoint and headers using protocol
     model = payload.get('model', '')
-    endpoint = protocol.get_endpoint(base_url, model)
+    endpoint = protocol.get_endpoint(base_url, model, stream)
 
     # Support custom auth header/value from config
     auth_header = api_config.get('auth_header', None)
@@ -526,9 +707,49 @@ def _replace_local_url(messages):
     return res
 
 
+def _replace_local_url_gemini(contents):
+    """Process Gemini contents format for local image files.
+
+    Gemini format uses contents[].parts[] where each part can be:
+    - {"text": "..."}
+    - {"inlineData": {"mimeType": "image/png", "data": "base64..."}}
+    """
+    import base64
+    from io import BytesIO
+    from PIL import Image
+
+    def encode_pil_image(pil_image):
+        buffered = BytesIO()
+        pil_image.save(buffered, format='PNG')
+        return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    res = contents.copy() if isinstance(contents, list) else [contents]
+    for content in res:
+        if "parts" in content:
+            parts = content["parts"]
+            for part in parts:
+                # Check for inlineData with local file path (custom extension)
+                if isinstance(part, dict) and "inlineData" in part:
+                    inline_data = part["inlineData"]
+                    # If data field contains a file path (not base64)
+                    if "data" in inline_data and not inline_data["data"].startswith("/"):
+                        continue  # Already base64
+                    # Handle file path in custom "url" field
+                    if "url" in inline_data:
+                        url = inline_data["url"]
+                        if not url.startswith("http") and not url.startswith("data"):
+                            with Image.open(url) as img:
+                                base64_encoded = encode_pil_image(img)
+                                inline_data["data"] = base64_encoded
+                                inline_data["mimeType"] = "image/png"
+                                del inline_data["url"]
+    return res
+
+
 def build_payload(task_data: Dict[str, Any],
                   api_config: Dict[str, Any],
-                  mask_input_fields: str
+                  mask_input_fields: str,
+                  protocol: BaseProtocol
                   ) -> Dict[str, Any]:
     """
     Prepares the payload to be sent to the API.
@@ -536,6 +757,7 @@ def build_payload(task_data: Dict[str, Any],
     This function should return the dictionary to be sent as the API request body.
 
     By default, it assumes the payload is the "body" field of the task data.
+    Uses protocol-specific processing for format validation and image handling.
     """
     if "body" in task_data:
         payload = task_data["body"]
@@ -544,9 +766,9 @@ def build_payload(task_data: Dict[str, Any],
 
     if not isinstance(payload, dict):
         raise ValueError("The 'body' field must be a dict (JSON object).")
-    if "messages" not in payload:
-        raise ValueError("The 'body' field must contain a 'messages' field.")
-    payload["messages"] = _replace_local_url(payload["messages"])
+
+    # Let protocol validate and prepare the payload
+    payload = protocol.prepare_payload(payload)
 
     mask_input_fields = mask_input_fields.split(",")
     for field in mask_input_fields:
@@ -634,13 +856,15 @@ def load_io_mapping(file_path: str) -> Dict[str, Any]:
 
 def simplify_images(payload):
     res = payload.copy()
-    for msg in res["messages"]:
-        if "content" in msg:
-            for item in msg["content"]:
-                if isinstance(item, dict) and item.get("type") == "image_url":
-                    url = item["image_url"]["url"]
-                    if url.startswith("data:image/"):
-                        item["image_url"]["url"] = item["image_url"]["url"][-40:]
+    if "messages" in res:
+        for msg in res["messages"]:
+            if "content" in msg:
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "image_url":
+                        url = item["image_url"]["url"]
+                        if url.startswith("data:image/"):
+                            item["image_url"]["url"] = item["image_url"]["url"][-40:]
+    # TODO: Add similar logic for Gemini format
     return res
 
 
@@ -779,11 +1003,12 @@ async def _execute_with_retry(
         except Exception as e:
             # Catch any other exceptions (e.g., from stream processing)
             # This is more common in async mode
-            logging.warning(
+            logging.error(
                 "Unexpected exception for %s: %s. Retrying (%d/%d)...",
                 context.custom_id, e, retries + 1, max_retries
             )
             last_error_msg = f"Unexpected exception: {e}."
+            raise
 
         # Exponential backoff
         retries += 1

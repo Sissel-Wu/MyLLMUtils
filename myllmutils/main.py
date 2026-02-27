@@ -5,6 +5,7 @@ from myllmutils.batch_process import process_single_query, process_single_query_
 import asyncio
 import httpx
 import os
+import yaml
 
 
 def example_zeroshot():
@@ -231,6 +232,86 @@ def example_stream_max_tokens():
     asyncio.run(async_test())
 
 
+def example_gemini():
+    """
+    Example demonstrating Gemini protocol with both streaming and non-streaming modes.
+    Tests both sync and async implementations.
+    """
+    query = {
+        "custom_id": "gemini_example_1",
+        "body": {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": "Explain quantum entanglement in one sentence."}
+                    ]
+                }
+            ],
+        }
+    }
+
+    with open("example_api_configs/gemini-flash.yaml") as f:
+        api_config = yaml.load(f, Loader=yaml.FullLoader)
+
+    # Test 1: Non-streaming sync mode
+    print("=" * 60)
+    print("Test 1: Gemini Non-Streaming (Sync)")
+    print("=" * 60)
+    success, result = process_single_query(query, api_config, stream=False)
+    if success:
+        print(f"Success: {success}")
+        print(f"Response: {result['response']}")
+    else:
+        print(f"Error: {result}")
+
+    # Test 2: Streaming sync mode
+    print("\n" + "=" * 60)
+    print("Test 2: Gemini Streaming (Sync)")
+    print("=" * 60)
+    success, result = process_single_query(query, api_config, stream=True)
+    if success:
+        print(f"Success: {success}")
+        print(f"Response: {result['response']}")
+    else:
+        print(f"Error: {result}")
+
+    # Test 3: Async modes
+    async def async_test():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60)) as async_client:
+            # Test 3a: Non-streaming async mode
+            print("\n" + "=" * 60)
+            print("Test 3: Gemini Non-Streaming (Async)")
+            print("=" * 60)
+            success, result = await process_single_query_async(
+                query, api_config, client=async_client, stream=False
+            )
+            if success:
+                print(f"Success: {success}")
+                print(f"Response: {result['response']}")
+            else:
+                print(f"Error: {result}")
+
+            # Test 3b: Streaming async mode
+            print("\n" + "=" * 60)
+            print("Test 4: Gemini Streaming (Async)")
+            print("=" * 60)
+            success, result = await process_single_query_async(
+                query, api_config, client=async_client, stream=True
+            )
+            if success:
+                print(f"Success: {success}")
+                print(f"Response: {result['response']}")
+            else:
+                print(f"Error: {result}")
+
+    asyncio.run(async_test())
+
+    print("\n" + "=" * 60)
+    print("All Gemini tests completed!")
+    print("=" * 60)
+
+
 def main():
     # check the configuration
     print(myllmutils.about())
@@ -247,6 +328,7 @@ def main():
     # example_ignore_cache_params()
     # example_offline()
     # example_vl()
-    example_batch_single()
+    # example_batch_single()
     # example_count_tokens()
-    # example_stream_max_tokens()
+    example_stream_max_tokens()
+    # example_gemini()
