@@ -429,7 +429,7 @@ class GeminiProtocol(BaseProtocol):
         model_info = ""
         finish_reason = None
         tool_calls = []
-        
+
         # TODO: handle thought
         try:
             if is_async:
@@ -1407,6 +1407,9 @@ def main_sync_impl(args):
     tasks_completed = 0
     total_tasks = len(tasks)
 
+    # 5. Load api config once to prevent repeated file reads in each thread
+    api_config = load_api_config(args.api_config)
+
     try:
         with ThreadPoolExecutor(
                 max_workers=args.max_workers,
@@ -1417,7 +1420,7 @@ def main_sync_impl(args):
                 executor.submit(
                     process_single_query,
                     task,
-                    args.api_config,
+                    api_config,
                     None,  # client - create temporary client per request
                     args.mask_input_fields,
                     args.stream,
