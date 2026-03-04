@@ -2,8 +2,13 @@
 LLM API Determinism Tester.
 
 Tests whether an LLM API produces deterministic outputs by sending the same prompts
-multiple times at various concurrency levels and measuring response consistency
-using edit distances.
+multiple times at various concurrency levels and measuring response consistency.
+
+Default metrics (fast): exact match, longest common prefix, SequenceMatcher similarity.
+Optional metric (slow): Levenshtein edit distance (--edit_distance flag).
+
+Supports caching LLM responses to a JSONL file (--cache_file) to avoid re-querying
+on restarts.
 
 Usage:
     python -m myllmutils.test_determinism \
@@ -23,6 +28,7 @@ import logging
 import os
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -121,14 +127,64 @@ def extract_response_text(result: Dict[str, Any], protocol: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Edit distance utilities
+# Response cache (JSONL-based resumability)
 # ---------------------------------------------------------------------------
 
+class ResponseCache:
+    """Thread-safe JSONL cache for LLM responses."""
+
+    def __init__(self, cache_file: str):
+        self.cache_file = cache_file
+        self._lock = threading.Lock()
+        self._cache: Dict[str, str] = {}  # custom_id -> response_text
+        self._load()
+
+    def _load(self):
+        if not os.path.exists(self.cache_file):
+            return
+        with open(self.cache_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                self._cache[entry["custom_id"]] = entry["response_text"]
+        logger.info("Loaded %d cached responses from %s", len(self._cache), self.cache_file)
+
+    def get(self, custom_id: str) -> Optional[str]:
+        return self._cache.get(custom_id)
+
+    def put(self, custom_id: str, response_text: str):
+        with self._lock:
+            self._cache[custom_id] = response_text
+            with open(self.cache_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"custom_id": custom_id, "response_text": response_text}, ensure_ascii=False) + "\n")
+
+    def __contains__(self, custom_id: str) -> bool:
+        return custom_id in self._cache
+
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+def longest_common_prefix_length(a: str, b: str) -> int:
+    limit = min(len(a), len(b))
+    for i in range(limit):
+        if a[i] != b[i]:
+            return i
+    return limit
+
+
 def similarity_ratio(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
 def levenshtein_distance(a: str, b: str) -> int:
+    if a == b:
+        return 0
     m, n = len(a), len(b)
     if m < n:
         return levenshtein_distance(b, a)
@@ -148,6 +204,29 @@ def levenshtein_distance(a: str, b: str) -> int:
     return dp[n]
 
 
+def compute_pair_metrics(a: str, b: str, use_edit_distance: bool) -> Dict[str, Any]:
+    if a == b:
+        metrics = {
+            "lcp_length": len(a),
+            "lcp_ratio": 1.0,
+        }
+        if use_edit_distance:
+            metrics["similarity"] = 1.0
+            metrics["edit_distance"] = 0
+        return metrics
+
+    lcp = longest_common_prefix_length(a, b)
+    max_len = max(len(a), len(b))
+    metrics = {
+        "lcp_length": lcp,
+        "lcp_ratio": lcp / max_len if max_len > 0 else 1.0,
+    }
+    if use_edit_distance:
+        metrics["similarity"] = similarity_ratio(a, b)
+        metrics["edit_distance"] = levenshtein_distance(a, b)
+    return metrics
+
+
 # ---------------------------------------------------------------------------
 # Batch execution
 # ---------------------------------------------------------------------------
@@ -158,6 +237,7 @@ def run_batch(
     api_config_path: str,
     protocol: str,
     args,
+    cache: Optional[ResponseCache] = None,
 ) -> Dict[int, List[Optional[str]]]:
     """Run all prompts with given batch_size (repetitions + concurrency).
 
@@ -170,62 +250,65 @@ def run_batch(
 
     try:
         for prompt_idx, prompt in enumerate(prompts):
-            tasks = [
-                create_task(prompt, prompt_idx, rep_idx, batch_size, protocol)
-                for rep_idx in range(batch_size)
-            ]
-
             responses: List[Tuple[int, Optional[str]]] = []
 
-            with ThreadPoolExecutor(max_workers=batch_size) as executor:
-                futures = {}
-                for rep_idx, task in enumerate(tasks):
-                    future = executor.submit(
-                        process_single_query,
-                        task,
-                        api_config_path,
-                        client,
-                        "",  # mask_input_fields
-                        args.stream,
-                        args.max_retries,
-                        args.timeout,
-                        args.no_verify,
-                    )
-                    futures[future] = rep_idx
+            # Check cache for already-completed reps
+            tasks_to_run = []
+            for rep_idx in range(batch_size):
+                task = create_task(prompt, prompt_idx, rep_idx, batch_size, protocol)
+                custom_id = task["custom_id"]
+                if cache and custom_id in cache:
+                    responses.append((rep_idx, cache.get(custom_id)))
+                else:
+                    tasks_to_run.append((rep_idx, task))
 
-                for future in as_completed(futures):
-                    rep_idx = futures[future]
-                    try:
-                        success, result = future.result()
-                        if success:
-                            text = extract_response_text(result, protocol)
-                            responses.append((rep_idx, text))
-                        else:
+            if tasks_to_run:
+                with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                    futures = {}
+                    for rep_idx, task in tasks_to_run:
+                        future = executor.submit(
+                            process_single_query,
+                            task,
+                            api_config_path,
+                            client,
+                            "",  # mask_input_fields
+                            args.stream,
+                            args.max_retries,
+                            args.timeout,
+                            args.no_verify,
+                        )
+                        futures[future] = (rep_idx, task["custom_id"])
+
+                    for future in as_completed(futures):
+                        rep_idx, custom_id = futures[future]
+                        try:
+                            success, result = future.result()
+                            if success:
+                                text = extract_response_text(result, protocol)
+                                responses.append((rep_idx, text))
+                                if cache:
+                                    cache.put(custom_id, text)
+                            else:
+                                logger.warning(
+                                    "Prompt %d rep %d failed: %s",
+                                    prompt_idx, rep_idx, result,
+                                )
+                                responses.append((rep_idx, None))
+                        except Exception as e:
                             logger.warning(
-                                "Prompt %d rep %d failed: %s",
-                                prompt_idx,
-                                rep_idx,
-                                result,
+                                "Prompt %d rep %d exception: %s",
+                                prompt_idx, rep_idx, e,
                             )
                             responses.append((rep_idx, None))
-                    except Exception as e:
-                        logger.warning(
-                            "Prompt %d rep %d exception: %s",
-                            prompt_idx,
-                            rep_idx,
-                            e,
-                        )
-                        responses.append((rep_idx, None))
 
+            cached = batch_size - len(tasks_to_run)
             responses.sort(key=lambda x: x[0])
             results[prompt_idx] = [text for _, text in responses]
 
-            logger.info(
-                "  batch_size=%d | prompt %d/%d done",
-                batch_size,
-                prompt_idx + 1,
-                len(prompts),
-            )
+            status = f"  batch_size={batch_size} | prompt {prompt_idx + 1}/{len(prompts)} done"
+            if cached > 0:
+                status += f" ({cached} cached)"
+            logger.info(status)
     finally:
         client.close()
 
@@ -236,36 +319,84 @@ def run_batch(
 # Analysis
 # ---------------------------------------------------------------------------
 
-def analyze_intra_batch(responses: List[Optional[str]]) -> Dict[str, Any]:
+def analyze_intra_batch(
+    responses: List[Optional[str]], use_edit_distance: bool
+) -> Dict[str, Any]:
     valid = [r for r in responses if r is not None]
     if len(valid) < 2:
-        return {
+        result = {
             "all_identical": len(set(valid)) <= 1,
             "num_unique": len(set(valid)),
-            "mean_similarity": 1.0 if valid else 0.0,
-            "min_similarity": 1.0 if valid else 0.0,
-            "pairwise_edit_distances": [],
+            "mean_lcp_ratio": 1.0 if valid else 0.0,
+            "min_lcp_length": len(valid[0]) if valid else 0,
         }
+        if use_edit_distance:
+            result["mean_similarity"] = 1.0 if valid else 0.0
+            result["max_edit_distance"] = 0
+        return result
 
-    ratios = []
-    distances = []
+    unique = list(set(valid))
+    num_unique = len(unique)
+
+    if num_unique == 1:
+        result = {
+            "all_identical": True,
+            "num_unique": 1,
+            "mean_lcp_ratio": 1.0,
+            "min_lcp_length": len(unique[0]),
+        }
+        if use_edit_distance:
+            result["mean_similarity"] = 1.0
+            result["max_edit_distance"] = 0
+        return result
+
+    # Compute metrics only between distinct unique strings
+    pair_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    unique_idx = {s: i for i, s in enumerate(unique)}
+    for i in range(num_unique):
+        for j in range(i + 1, num_unique):
+            pair_cache[(i, j)] = compute_pair_metrics(
+                unique[i], unique[j], use_edit_distance
+            )
+
+    # Aggregate over all pairs (using cache for repeated values)
+    lcp_ratios = []
+    lcp_lengths = []
+    sims = [] if use_edit_distance else None
+    edit_dists = [] if use_edit_distance else None
     for i in range(len(valid)):
         for j in range(i + 1, len(valid)):
-            ratios.append(similarity_ratio(valid[i], valid[j]))
-            distances.append(levenshtein_distance(valid[i], valid[j]))
+            if valid[i] == valid[j]:
+                lcp_ratios.append(1.0)
+                lcp_lengths.append(len(valid[i]))
+                if use_edit_distance:
+                    sims.append(1.0)
+                    edit_dists.append(0)
+            else:
+                ui, uj = unique_idx[valid[i]], unique_idx[valid[j]]
+                key = (min(ui, uj), max(ui, uj))
+                m = pair_cache[key]
+                lcp_ratios.append(m["lcp_ratio"])
+                lcp_lengths.append(m["lcp_length"])
+                if use_edit_distance:
+                    sims.append(m["similarity"])
+                    edit_dists.append(m["edit_distance"])
 
-    unique = len(set(valid))
-    return {
-        "all_identical": unique == 1,
-        "num_unique": unique,
-        "mean_similarity": sum(ratios) / len(ratios),
-        "min_similarity": min(ratios),
-        "pairwise_edit_distances": distances,
+    result = {
+        "all_identical": False,
+        "num_unique": num_unique,
+        "mean_lcp_ratio": sum(lcp_ratios) / len(lcp_ratios),
+        "min_lcp_length": min(lcp_lengths),
     }
+    if use_edit_distance:
+        result["mean_similarity"] = sum(sims) / len(sims)
+        result["max_edit_distance"] = max(edit_dists)
+    return result
 
 
 def analyze_cross_batch(
     all_batch_results: Dict[int, List[Optional[str]]],
+    use_edit_distance: bool,
 ) -> Dict[str, Any]:
     representatives = {}
     for bs, responses in all_batch_results.items():
@@ -281,14 +412,19 @@ def analyze_cross_batch(
     for i in range(len(batch_sizes)):
         for j in range(i + 1, len(batch_sizes)):
             bs_a, bs_b = batch_sizes[i], batch_sizes[j]
-            ratio = similarity_ratio(representatives[bs_a], representatives[bs_b])
-            dist = levenshtein_distance(representatives[bs_a], representatives[bs_b])
-            comparisons.append({
+            m = compute_pair_metrics(
+                representatives[bs_a], representatives[bs_b], use_edit_distance
+            )
+            comp = {
                 "batch_size_a": bs_a,
                 "batch_size_b": bs_b,
-                "similarity": ratio,
-                "edit_distance": dist,
-            })
+                "lcp_length": m["lcp_length"],
+                "lcp_ratio": m["lcp_ratio"],
+            }
+            if use_edit_distance:
+                comp["similarity"] = m["similarity"]
+                comp["edit_distance"] = m["edit_distance"]
+            comparisons.append(comp)
 
     all_texts = list(representatives.values())
     return {
@@ -307,6 +443,7 @@ def print_report(
     num_prompts: int,
     batch_sizes: List[int],
     per_prompt: List[Dict[str, Any]],
+    use_edit_distance: bool,
 ):
     sep = "=" * 64
     print(f"\n{sep}")
@@ -326,11 +463,16 @@ def print_report(
         total = len(per_prompt)
         pct = identical / total * 100 if total else 0
 
-        sims = [p["intra_batch"][bs]["mean_similarity"] for p in per_prompt]
-        mean_sim = sum(sims) / len(sims) if sims else 0
+        lcp_ratios = [p["intra_batch"][bs]["mean_lcp_ratio"] for p in per_prompt]
+        mean_lcp = sum(lcp_ratios) / len(lcp_ratios) if lcp_ratios else 0
 
         print(f"  Exact match: {identical}/{total} ({pct:.1f}%)")
-        print(f"  Mean similarity: {mean_sim:.4f}")
+        print(f"  Mean LCP ratio: {mean_lcp:.4f}")
+
+        if use_edit_distance:
+            sims = [p["intra_batch"][bs]["mean_similarity"] for p in per_prompt]
+            mean_sim = sum(sims) / len(sims) if sims else 0
+            print(f"  Mean similarity: {mean_sim:.4f}")
 
         divergent = [
             (p["prompt_idx"], p["intra_batch"][bs])
@@ -340,12 +482,11 @@ def print_report(
         if divergent:
             print(f"  Divergent prompts ({len(divergent)}):")
             for idx, analysis in divergent[:10]:
-                dists = analysis["pairwise_edit_distances"]
-                max_dist = max(dists) if dists else 0
-                print(
-                    f"    Prompt {idx}: sim={analysis['min_similarity']:.4f}, "
-                    f"max_edit_dist={max_dist}"
-                )
+                line = f"    Prompt {idx}: lcp={analysis['min_lcp_length']}"
+                if use_edit_distance:
+                    line += f", sim={analysis['mean_similarity']:.4f}"
+                    line += f", max_edit_dist={analysis['max_edit_distance']}"
+                print(line)
             if len(divergent) > 10:
                 print(f"    ... and {len(divergent) - 10} more")
 
@@ -356,26 +497,35 @@ def print_report(
     pct = identical / total * 100 if total else 0
     print(f"  Identical across all batch sizes: {identical}/{total} ({pct:.1f}%)")
 
-    all_cross_sims = []
+    all_cross_lcps = []
     for p in per_prompt:
         for comp in p["cross_batch"]["pairwise_comparisons"]:
-            all_cross_sims.append(comp["similarity"])
-    if all_cross_sims:
-        mean_cross = sum(all_cross_sims) / len(all_cross_sims)
-        print(f"  Mean cross-batch similarity: {mean_cross:.4f}")
+            all_cross_lcps.append(comp["lcp_ratio"])
+    if all_cross_lcps:
+        mean_cross_lcp = sum(all_cross_lcps) / len(all_cross_lcps)
+        print(f"  Mean cross-batch LCP ratio: {mean_cross_lcp:.4f}")
 
-    # Overall
-    all_sims = []
+    if use_edit_distance:
+        all_cross_sims = []
+        for p in per_prompt:
+            for comp in p["cross_batch"]["pairwise_comparisons"]:
+                all_cross_sims.append(comp["similarity"])
+        if all_cross_sims:
+            mean_cross = sum(all_cross_sims) / len(all_cross_sims)
+            print(f"  Mean cross-batch similarity: {mean_cross:.4f}")
+
+    # Overall determinism score based on LCP ratio
+    all_lcps = []
     for p in per_prompt:
         for bs in batch_sizes:
             if bs >= 2:
-                all_sims.append(p["intra_batch"][bs]["mean_similarity"])
+                all_lcps.append(p["intra_batch"][bs]["mean_lcp_ratio"])
         for comp in p["cross_batch"]["pairwise_comparisons"]:
-            all_sims.append(comp["similarity"])
+            all_lcps.append(comp["lcp_ratio"])
 
-    if all_sims:
-        overall = sum(all_sims) / len(all_sims)
-        print(f"\n--- Overall Determinism Score: {overall:.4f} ---")
+    if all_lcps:
+        overall = sum(all_lcps) / len(all_lcps)
+        print(f"\n--- Overall Determinism Score (LCP): {overall:.4f} ---")
 
     print(sep + "\n")
 
@@ -487,6 +637,20 @@ def main():
         default=None,
         help="Path to save detailed JSON results.",
     )
+    parser.add_argument(
+        "--cache_file",
+        type=str,
+        default=None,
+        help="Path to JSONL cache file for LLM responses.\n"
+        "Enables resumability: cached responses are reused on restart.\n"
+        "New responses are appended as they complete.",
+    )
+    parser.add_argument(
+        "--edit_distance",
+        action="store_true",
+        help="Compute Levenshtein edit distance (slow for long responses).\n"
+        "Default metrics (LCP, similarity ratio) are always computed.",
+    )
 
     args = parser.parse_args()
 
@@ -500,6 +664,8 @@ def main():
     protocol = api_config.get("protocol", "openai")
     model_name = api_config.get("model", "unknown")
 
+    cache = ResponseCache(args.cache_file) if args.cache_file else None
+
     logger.info("Loading dataset: %s (split=%s, column=%s)", args.dataset, args.dataset_split, args.text_column)
     prompts = load_prompts(args)
     logger.info("Loaded %d prompts.", len(prompts))
@@ -509,7 +675,7 @@ def main():
 
     for bs in batch_sizes:
         logger.info("Running batch_size=%d (%d repetitions, %d workers)...", bs, bs, bs)
-        all_results[bs] = run_batch(prompts, bs, args.api_config, protocol, args)
+        all_results[bs] = run_batch(prompts, bs, args.api_config, protocol, args, cache)
 
     # Analyze
     per_prompt = []
@@ -519,9 +685,9 @@ def main():
         for bs in batch_sizes:
             responses = all_results[bs][prompt_idx]
             batch_responses[bs] = responses
-            intra[bs] = analyze_intra_batch(responses)
+            intra[bs] = analyze_intra_batch(responses, args.edit_distance)
 
-        cross = analyze_cross_batch(batch_responses)
+        cross = analyze_cross_batch(batch_responses, args.edit_distance)
 
         per_prompt.append({
             "prompt_idx": prompt_idx,
@@ -531,7 +697,7 @@ def main():
             "responses": {bs: all_results[bs][prompt_idx] for bs in batch_sizes},
         })
 
-    print_report(model_name, args.dataset, len(prompts), batch_sizes, per_prompt)
+    print_report(model_name, args.dataset, len(prompts), batch_sizes, per_prompt, args.edit_distance)
 
     if args.output_file:
         save_json_report(args.output_file, args, model_name, batch_sizes, prompts, per_prompt)

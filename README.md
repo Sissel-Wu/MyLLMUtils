@@ -152,3 +152,56 @@ python -m myllmutils.batch_process \
   "input2.jsonl": "output2.jsonl"
 }
 ```
+
+## Determinism Testing
+
+Test whether an LLM API produces deterministic outputs by sending the same prompts multiple times at various concurrency levels:
+
+```bash
+python -m myllmutils.test_determinism \
+  --dataset tatsu-lab/alpaca_eval \
+  --text_column instruction \
+  --api_config model.yaml \
+  --batch_sizes 1,2,4,8 \
+  --max_prompts 50
+```
+
+Each `batch_size` value controls both the number of repetitions per prompt and the `max_workers` concurrency level. The script measures intra-batch consistency (same concurrency) and cross-batch consistency (across concurrency levels).
+
+### Metrics
+
+- **Default (fast):** Exact match rate, longest common prefix (LCP) length and ratio — O(n)
+- **Optional (`--edit_distance`):** Levenshtein edit distance, SequenceMatcher similarity — O(n*m), use for short responses
+
+### Caching
+
+Use `--cache_file` to save responses to a JSONL file. On restart, cached responses are reused automatically:
+
+```bash
+python -m myllmutils.test_determinism \
+  --dataset prompts.json \
+  --text_column prompt \
+  --api_config model.yaml \
+  --batch_sizes 1,4 \
+  --cache_file cache.jsonl \
+  --output_file report.json
+```
+
+### CLI Options
+
+| Option | Description |
+|--------|-------------|
+| `--dataset` | Local file path or HuggingFace dataset identifier (required) |
+| `--text_column` | Column name containing prompt text (required) |
+| `--api_config` | API config file (required) |
+| `--batch_sizes` | Comma-separated list, e.g. `1,2,4,8` (required) |
+| `--dataset_split` | Dataset split (default: `train`) |
+| `--dataset_config` | HuggingFace dataset config/subset name |
+| `--max_prompts` | Limit number of prompts (0 = all) |
+| `--stream` | Enable streaming mode |
+| `--cache_file` | JSONL cache file for response resumability |
+| `--output_file` | Save detailed JSON report |
+| `--edit_distance` | Enable expensive Levenshtein/SequenceMatcher metrics |
+| `--max_retries` | Max retries for server errors (default: 5) |
+| `--timeout` | Request timeout in seconds (default: 60) |
+| `--no_verify` | Disable SSL verification |

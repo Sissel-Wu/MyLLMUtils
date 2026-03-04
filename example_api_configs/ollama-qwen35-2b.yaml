@@ -1,0 +1,5 @@
+base_url: http://localhost:11434/v1
+api_key: no
+model: qwen3.5:2b
+max_tokens: 2048
+temperature: 0
