@@ -208,3 +208,52 @@ python -m myllmutils.test_determinism \
 | `--max_retries` | Max retries for server errors (default: 5) |
 | `--timeout` | Request timeout in seconds (default: 60) |
 | `--no_verify` | Disable SSL verification |
+
+## Entropy Sequence
+
+Compute approximate per-token entropy from LLM logprobs. Runs queries in batch with `logprobs` enabled, then computes `H = -sum(exp(lp) * lp for lp in top_logprobs)` at each token position (a lower bound using only the top-K logprobs).
+
+```bash
+# From JSONL input
+python -m myllmutils.entropy_seq \
+  --input_file queries.jsonl \
+  --output_file results.jsonl \
+  --api_config model.yaml \
+  --top_logprobs 5
+
+# From dataset
+python -m myllmutils.entropy_seq \
+  --dataset tatsu-lab/alpaca_eval \
+  --text_column instruction \
+  --max_prompts 50 \
+  --output_file results.jsonl \
+  --api_config model.yaml \
+  --top_logprobs 5
+
+# Or use the installed script
+uv run entropy-seq --help
+```
+
+**Output JSONL format:**
+```jsonl
+{"custom_id": "prompt-0", "response": {...}, "entropy": {"per_token": [{"token": "Hello", "logprob": -0.5, "entropy": 0.32}, ...], "mean_entropy": 0.45, "num_tokens": 15}}
+```
+
+### CLI Options
+
+| Option | Description |
+|--------|-------------|
+| `--input_file` | Input JSONL file (same format as batch_process) |
+| `--dataset` | Local file path or HuggingFace dataset identifier |
+| `--text_column` | Column name containing prompt text (required with `--dataset`) |
+| `--output_file` | Output JSONL file path (required) |
+| `--api_config` | API config file (required) |
+| `--top_logprobs` | Number of top logprobs per token, 1-20 (default: 5) |
+| `--max_workers` | Concurrent threads (default: 4) |
+| `--dataset_split` | Dataset split (default: `train`) |
+| `--dataset_config` | HuggingFace dataset config/subset name |
+| `--max_prompts` | Limit number of prompts (0 = all) |
+| `--no_stream` | Disable streaming (streaming enabled by default) |
+| `--max_retries` | Max retries for server errors (default: 5) |
+| `--timeout` | Request timeout in seconds (default: 60) |
+| `--no_verify` | Disable SSL verification |
