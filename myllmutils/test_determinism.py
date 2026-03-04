@@ -15,10 +15,12 @@ Usage:
         --dataset <path_or_hf_name> \
         --text_column <column> \
         --api_config <config.yaml> \
-        --batch_sizes 1,2,4,8
+        --batch_sizes 1,2,4,8 \
+        --num_repetitions 8
 
-Each batch_size value controls both the number of repetitions per prompt AND the
-max_workers concurrency level.
+Each batch_size value controls the max_workers concurrency level. The --num_repetitions
+parameter controls how many total responses to collect per prompt per batch setting.
+Requests are dispatched in rounds of batch_size concurrent workers.
 """
 
 import argparse
@@ -234,13 +236,15 @@ def compute_pair_metrics(a: str, b: str, use_edit_distance: bool) -> Dict[str, A
 def run_batch(
     prompts: List[str],
     batch_size: int,
+    num_repetitions: int,
     api_config_path: str,
     protocol: str,
     args,
     cache: Optional[ResponseCache] = None,
 ) -> Dict[int, List[Optional[str]]]:
-    """Run all prompts with given batch_size (repetitions + concurrency).
+    """Run all prompts with given concurrency level, collecting num_repetitions responses.
 
+    Dispatches requests in rounds of batch_size concurrent workers.
     Returns dict mapping prompt_idx -> list of response texts (None on failure).
     """
     results: Dict[int, List[Optional[str]]] = {}
@@ -254,7 +258,7 @@ def run_batch(
 
             # Check cache for already-completed reps
             tasks_to_run = []
-            for rep_idx in range(batch_size):
+            for rep_idx in range(num_repetitions):
                 task = create_task(prompt, prompt_idx, rep_idx, batch_size, protocol)
                 custom_id = task["custom_id"]
                 if cache and custom_id in cache:
@@ -262,10 +266,12 @@ def run_batch(
                 else:
                     tasks_to_run.append((rep_idx, task))
 
-            if tasks_to_run:
+            # Dispatch uncached tasks in rounds of batch_size
+            for round_start in range(0, len(tasks_to_run), batch_size):
+                round_tasks = tasks_to_run[round_start:round_start + batch_size]
                 with ThreadPoolExecutor(max_workers=batch_size) as executor:
                     futures = {}
-                    for rep_idx, task in tasks_to_run:
+                    for rep_idx, task in round_tasks:
                         future = executor.submit(
                             process_single_query,
                             task,
@@ -301,7 +307,7 @@ def run_batch(
                             )
                             responses.append((rep_idx, None))
 
-            cached = batch_size - len(tasks_to_run)
+            cached = num_repetitions - len(tasks_to_run)
             responses.sort(key=lambda x: x[0])
             results[prompt_idx] = [text for _, text in responses]
 
@@ -442,6 +448,7 @@ def print_report(
     dataset_name: str,
     num_prompts: int,
     batch_sizes: List[int],
+    num_repetitions: int,
     per_prompt: List[Dict[str, Any]],
     use_edit_distance: bool,
 ):
@@ -450,12 +457,12 @@ def print_report(
     print("LLM Determinism Test Report")
     print(sep)
     print(f"Model: {model_name} | Dataset: {dataset_name} ({num_prompts} prompts)")
-    print(f"Batch sizes: {batch_sizes}")
+    print(f"Batch sizes (concurrency): {batch_sizes} | Repetitions: {num_repetitions}")
     print("-" * 64)
 
     for bs in batch_sizes:
         print(f"\n--- Intra-Batch (batch_size={bs}) ---")
-        if bs < 2:
+        if num_repetitions < 2:
             print("  (Only 1 repetition - no intra-batch comparison)")
             continue
 
@@ -545,6 +552,7 @@ def save_json_report(
             "dataset": args.dataset,
             "text_column": args.text_column,
             "batch_sizes": batch_sizes,
+            "num_repetitions": args.num_repetitions,
             "num_prompts": len(prompts),
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
@@ -588,8 +596,16 @@ def main():
         "--batch_sizes",
         type=str,
         required=True,
-        help="Comma-separated list of batch sizes (e.g., '1,2,4,8').\n"
-        "Each value = number of repetitions AND max_workers concurrency.",
+        help="Comma-separated list of concurrency levels (e.g., '1,2,4,8').\n"
+        "Each value = max_workers for ThreadPoolExecutor.\n"
+        "Requests are dispatched in rounds of this many concurrent workers.",
+    )
+    parser.add_argument(
+        "--num_repetitions",
+        type=int,
+        required=True,
+        help="Number of responses to collect per prompt per batch setting.\n"
+        "Same count is used for every batch_size, ensuring fair comparison.",
     )
     parser.add_argument(
         "--dataset_split",
@@ -659,6 +675,9 @@ def main():
         if bs < 1:
             logger.critical("Batch sizes must be >= 1, got %d", bs)
             sys.exit(1)
+    if args.num_repetitions < 1:
+        logger.critical("--num_repetitions must be >= 1, got %d", args.num_repetitions)
+        sys.exit(1)
 
     api_config = load_api_config(args.api_config)
     protocol = api_config.get("protocol", "openai")
@@ -674,8 +693,12 @@ def main():
     all_results: Dict[int, Dict[int, List[Optional[str]]]] = {}
 
     for bs in batch_sizes:
-        logger.info("Running batch_size=%d (%d repetitions, %d workers)...", bs, bs, bs)
-        all_results[bs] = run_batch(prompts, bs, args.api_config, protocol, args, cache)
+        num_rounds = (args.num_repetitions + bs - 1) // bs
+        logger.info(
+            "Running batch_size=%d (%d repetitions, %d rounds of %d workers)...",
+            bs, args.num_repetitions, num_rounds, bs,
+        )
+        all_results[bs] = run_batch(prompts, bs, args.num_repetitions, args.api_config, protocol, args, cache)
 
     # Analyze
     per_prompt = []
@@ -697,7 +720,7 @@ def main():
             "responses": {bs: all_results[bs][prompt_idx] for bs in batch_sizes},
         })
 
-    print_report(model_name, args.dataset, len(prompts), batch_sizes, per_prompt, args.edit_distance)
+    print_report(model_name, args.dataset, len(prompts), batch_sizes, args.num_repetitions, per_prompt, args.edit_distance)
 
     if args.output_file:
         save_json_report(args.output_file, args, model_name, batch_sizes, prompts, per_prompt)

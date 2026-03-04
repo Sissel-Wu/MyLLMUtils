@@ -218,28 +218,29 @@ class OpenAIProtocol(BaseProtocol):
         full_content = ""
         full_reasoning = ""
         tool_call_chunks = {}
+        logprobs_content = []
         model_info = ""
         response_id = ""
-        finish_reason = "stop"            
+        finish_reason = "stop"
 
         try:
             if is_async:
                 async for line in response.aiter_lines():
                     if line and line.startswith('data: '):
-                        full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason = await self._process_stream_line(
+                        full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason = await self._process_stream_line(
                             line, full_content, full_reasoning, tool_call_chunks,
-                            response_id, model_info, finish_reason,
+                            logprobs_content, response_id, model_info, finish_reason,
                             max_stream_tokens, token_counter, response
                         )
                         # Break if token limit reached
                         if finish_reason == 'length':
                             break
             else:
-                for line in response.iter_lines():                    
+                for line in response.iter_lines():
                     if line.startswith('data: '):
-                        full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason = await self._process_stream_line(
+                        full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason = await self._process_stream_line(
                             line, full_content, full_reasoning, tool_call_chunks,
-                            response_id, model_info, finish_reason,
+                            logprobs_content, response_id, model_info, finish_reason,
                             max_stream_tokens, token_counter, response
                         )
                         # Break if token limit reached
@@ -274,16 +275,20 @@ class OpenAIProtocol(BaseProtocol):
         if full_reasoning:
             message["reasoning_content"] = full_reasoning
 
+        choice = {
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason
+        }
+        if logprobs_content:
+            choice["logprobs"] = {"content": logprobs_content}
+
         return {
             "id": response_id,
             "model": model_info,
             "object": "chat.completion",
             "created": int(time.time()),
-            "choices": [{
-                "index": 0,
-                "message": message,
-                "finish_reason": finish_reason
-            }],
+            "choices": [choice],
             "usage": {
                 "prompt_tokens": None,
                 "completion_tokens": None,
@@ -297,6 +302,7 @@ class OpenAIProtocol(BaseProtocol):
         full_content: str,
         full_reasoning: str,
         tool_call_chunks: dict,
+        logprobs_content: list,
         response_id: str,
         model_info: str,
         finish_reason: str,
@@ -307,7 +313,7 @@ class OpenAIProtocol(BaseProtocol):
         """Process a single SSE line from a streaming response."""
         data_str = line[len('data: '):]
         if data_str.strip() == '[DONE]':
-            return (full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason)
+            return (full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason)
 
         try:
             chunk = json.loads(data_str)
@@ -317,11 +323,16 @@ class OpenAIProtocol(BaseProtocol):
 
             choices = chunk.get('choices', [])
             if not choices:
-                return (full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason)
+                return (full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason)
+
+            # Process logprobs (at choices[0].logprobs, not inside delta)
+            chunk_logprobs = choices[0].get('logprobs')
+            if chunk_logprobs and chunk_logprobs.get('content'):
+                logprobs_content.extend(chunk_logprobs['content'])
 
             delta = choices[0].get('delta', {})
             if not delta:
-                return (full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason)
+                return (full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason)
 
             # Process Content Deltas
             if delta.get('content'):
@@ -346,7 +357,7 @@ class OpenAIProtocol(BaseProtocol):
                     if total_tokens > max_stream_tokens:
                         finish_reason = 'length'
                         # Return accumulated state with finish_reason='length' to preserve content
-                        return (full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason)
+                        return (full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason)
                 except Exception:
                     logging.warning("Token counting failed during streaming; continuing without enforcement.")
 
@@ -382,7 +393,7 @@ class OpenAIProtocol(BaseProtocol):
         except json.JSONDecodeError:
             logging.warning("Failed to decode JSON chunk: %s", data_str)
 
-        return (full_content, full_reasoning, tool_call_chunks, response_id, model_info, finish_reason)
+        return (full_content, full_reasoning, tool_call_chunks, logprobs_content, response_id, model_info, finish_reason)
 
 
 class GeminiProtocol(BaseProtocol):

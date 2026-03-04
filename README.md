@@ -163,10 +163,11 @@ python -m myllmutils.test_determinism \
   --text_column instruction \
   --api_config model.yaml \
   --batch_sizes 1,2,4,8 \
+  --num_repetitions 8 \
   --max_prompts 50
 ```
 
-Each `batch_size` value controls both the number of repetitions per prompt and the `max_workers` concurrency level. The script measures intra-batch consistency (same concurrency) and cross-batch consistency (across concurrency levels).
+Each `batch_size` value controls the concurrency level (max_workers per round). The `--num_repetitions` parameter controls how many total responses are collected per prompt per batch setting — the same count for every batch_size, ensuring fair comparison. Requests are dispatched in rounds of `batch_size` concurrent workers.
 
 ### Metrics
 
@@ -183,6 +184,7 @@ python -m myllmutils.test_determinism \
   --text_column prompt \
   --api_config model.yaml \
   --batch_sizes 1,4 \
+  --num_repetitions 4 \
   --cache_file cache.jsonl \
   --output_file report.json
 ```
@@ -194,7 +196,8 @@ python -m myllmutils.test_determinism \
 | `--dataset` | Local file path or HuggingFace dataset identifier (required) |
 | `--text_column` | Column name containing prompt text (required) |
 | `--api_config` | API config file (required) |
-| `--batch_sizes` | Comma-separated list, e.g. `1,2,4,8` (required) |
+| `--batch_sizes` | Comma-separated concurrency levels, e.g. `1,2,4,8` (required) |
+| `--num_repetitions` | Responses per prompt per batch setting (required) |
 | `--dataset_split` | Dataset split (default: `train`) |
 | `--dataset_config` | HuggingFace dataset config/subset name |
 | `--max_prompts` | Limit number of prompts (0 = all) |
