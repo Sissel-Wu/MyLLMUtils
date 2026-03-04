@@ -1,6 +1,6 @@
 [project]
 name = "myllmutils"
-version = "0.7.2b"
+version = "0.7.3"
 description = "A lightweight library to ease LLM query and storage"
 authors = [{name = "Sissel-Wu", email = "sissel126@gmail.com"}]
 readme = "README.md"
