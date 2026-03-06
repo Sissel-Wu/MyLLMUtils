@@ -29,18 +29,17 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import math
 import os
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 
-from myllmutils.batch_process import load_api_config, process_single_query
+from myllmutils.batch_process import load_api_config, process_single_query_async
 
 logging.basicConfig(
     level=logging.INFO,
@@ -197,11 +196,83 @@ def compute_entropy(logprobs_content: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _extract_entropy(response: Dict[str, Any], custom_id: str = "") -> Dict[str, Any]:
+    """Extract logprobs from a response and compute entropy.
+
+    Raises RuntimeError if logprobs are missing.
+    """
+    logprobs_data = (
+        response.get("choices", [{}])[0]
+        .get("logprobs", {})
+        .get("content")
+    )
+    if not logprobs_data:
+        label = f"Task {custom_id}: " if custom_id else ""
+        raise RuntimeError(
+            f"{label}response contains no logprobs. "
+            "Ensure the model and API support logprobs."
+        )
+    return compute_entropy(logprobs_data)
+
+
 # ---------------------------------------------------------------------------
-# Batch execution
+# Single-prompt API
 # ---------------------------------------------------------------------------
 
-def run_batch(
+async def get_entropy_seq(
+    prompt: str,
+    api_config: str | Dict[str, Any],
+    top_logprobs: int = 5,
+    stream: bool = True,
+    max_retries: int = 5,
+    client: Optional[httpx.AsyncClient] = None,
+) -> Dict[str, Any]:
+    """Compute per-token entropy for a single prompt.
+
+    Args:
+        prompt: The user prompt text.
+        api_config: Path to API config file or config dict.
+        top_logprobs: Number of top logprobs per token (1-20).
+        stream: Whether to use streaming mode.
+        max_retries: Max retries for server errors.
+        client: Optional httpx.AsyncClient to reuse. If None, one is created.
+
+    Returns:
+        Dict with keys: per_token, mean_entropy, num_tokens, response.
+
+    Raises:
+        RuntimeError: If the API call fails or response contains no logprobs.
+    """
+    config = load_api_config(api_config)
+    protocol = config.get("protocol", "openai")
+
+    task = create_task(prompt, 0, protocol)
+    task["body"]["logprobs"] = True
+    task["body"]["top_logprobs"] = top_logprobs
+
+    owns_client = client is None
+    if owns_client:
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout=60, read=None if stream else 60),
+        )
+
+    try:
+        success, result = await process_single_query_async(
+            task, api_config, client, "", stream, max_retries,
+        )
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    if not success:
+        raise RuntimeError(f"API call failed: {result}")
+
+    response = result["response"]
+    entropy = _extract_entropy(response)
+    entropy["response"] = response
+    return entropy
+
+async def run_batch(
     tasks: List[Dict[str, Any]],
     api_config_path: str,
     args,
@@ -220,73 +291,76 @@ def run_batch(
     )
 
     stream = not args.no_stream
-    verify = not args.no_verify
-    write_lock = threading.Lock()
-    client = httpx.Client(verify=verify, timeout=args.timeout)
+
+    # Inject logprobs parameters into all task bodies
+    for task in pending:
+        task["body"]["logprobs"] = True
+        task["body"]["top_logprobs"] = args.top_logprobs
+
+    timeout_config = httpx.Timeout(
+        timeout=args.timeout,
+        read=None if stream else args.timeout,
+    )
+    limits = httpx.Limits(
+        max_connections=args.max_workers * 2,
+        max_keepalive_connections=args.max_workers,
+    )
 
     completed = 0
+    semaphore = asyncio.Semaphore(args.max_workers)
+    file_lock = asyncio.Lock()
 
-    try:
-        with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-            futures = {}
-            for task in pending:
-                # Inject logprobs parameters into body
-                task["body"]["logprobs"] = True
-                task["body"]["top_logprobs"] = args.top_logprobs
+    async def bounded_process(task):
+        async with semaphore:
+            success, result = await process_single_query_async(
+                task,
+                api_config_path,
+                client,
+                "",  # mask_input_fields
+                stream,
+                args.max_retries,
+            )
+            return task["custom_id"], success, result
 
-                future = executor.submit(
-                    process_single_query,
-                    task,
-                    api_config_path,
-                    client,
-                    "",  # mask_input_fields
-                    stream,
-                    args.max_retries,
-                    args.timeout,
-                    args.no_verify,
-                )
-                futures[future] = task["custom_id"]
+    async with httpx.AsyncClient(
+        timeout=timeout_config,
+        verify=not args.no_verify,
+        limits=limits,
+    ) as client:
+        coroutines = [bounded_process(task) for task in pending]
 
-            for future in as_completed(futures):
-                custom_id = futures[future]
-                try:
-                    success, result = future.result()
-                    if success:
-                        # Extract logprobs and compute entropy
-                        response = result["response"]
-                        logprobs_data = (
-                            response.get("choices", [{}])[0]
-                            .get("logprobs", {})
-                            .get("content")
+        logger.info(
+            "Submitted %d tasks with max %d concurrent workers.",
+            len(pending), args.max_workers,
+        )
+
+        for coro in asyncio.as_completed(coroutines):
+            try:
+                custom_id, success, result = await coro
+                if success:
+                    response = result["response"]
+                    entropy = _extract_entropy(response, custom_id)
+
+                    output_entry = {
+                        "custom_id": custom_id,
+                        "response": response,
+                        "query": result.get("query"),
+                        "entropy": entropy,
+                    }
+
+                    async with file_lock:
+                        with open(args.output_file, "a", encoding="utf-8") as f:
+                            f.write(json.dumps(output_entry, ensure_ascii=False) + "\n")
+
+                    completed += 1
+                    if completed % 10 == 0 or completed == len(pending):
+                        logger.info(
+                            "Progress: %d/%d completed", completed, len(pending)
                         )
-
-                        entropy = (
-                            compute_entropy(logprobs_data)
-                            if logprobs_data
-                            else {"per_token": [], "mean_entropy": 0.0, "num_tokens": 0}
-                        )
-
-                        output_entry = {
-                            "custom_id": custom_id,
-                            "response": response,
-                            "entropy": entropy,
-                        }
-
-                        with write_lock:
-                            with open(args.output_file, "a", encoding="utf-8") as f:
-                                f.write(json.dumps(output_entry, ensure_ascii=False) + "\n")
-
-                        completed += 1
-                        if completed % 10 == 0 or completed == len(pending):
-                            logger.info(
-                                "Progress: %d/%d completed", completed, len(pending)
-                            )
-                    else:
-                        logger.warning("Task %s failed: %s", custom_id, result)
-                except Exception as e:
-                    logger.warning("Task %s exception: %s", custom_id, e)
-    finally:
-        client.close()
+                else:
+                    logger.warning("Task %s failed: %s", custom_id, result)
+            except Exception as e:
+                logger.warning("Task %s exception: %s", custom_id, e)
 
     logger.info("Done. %d/%d tasks completed.", completed, len(pending))
 
@@ -417,7 +491,7 @@ def main():
     if completed_ids:
         logger.info("Found %d already-completed tasks in %s", len(completed_ids), args.output_file)
 
-    run_batch(tasks, args.api_config, args, completed_ids)
+    asyncio.run(run_batch(tasks, args.api_config, args, completed_ids))
 
 
 if __name__ == "__main__":

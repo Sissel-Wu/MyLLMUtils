@@ -166,3 +166,6 @@ temp/
 
 .vscode/
 .github/
+
+tmp_*
+CLAUDE.md
